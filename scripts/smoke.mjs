@@ -1,0 +1,126 @@
+// End-to-end smoke test against a running Worker (default: local dev).
+//   BASE=http://127.0.0.1:8799 PARENT_PIN=8888 CHILD_PIN=1234 node scripts/smoke.mjs
+// Uses the public samples in samples/. Run against a fresh local DB with AI_MOCK=1.
+import { readFileSync, readdirSync } from "node:fs";
+
+const BASE = process.env.BASE || "http://127.0.0.1:8799";
+const jar = { parent: "", child: "" };
+
+async function call(role, method, path, body) {
+  const res = await fetch(BASE + path, {
+    method,
+    headers: { "content-type": "application/json", cookie: jar[role], ...(role === "parent" ? { "x-rh-area": "parent" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const sc = res.headers.get("set-cookie");
+  if (sc) jar[role] = sc.split(";")[0];
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${JSON.stringify(data)}`);
+  return data;
+}
+const ok = (cond, msg) => {
+  if (!cond) throw new Error("FAILED: " + msg);
+  console.log("  ✓", msg);
+};
+
+console.log("login");
+ok((await call("parent", "POST", "/api/login", { pin: process.env.PARENT_PIN || "8888" })).role === "parent", "parent PIN");
+ok((await call("child", "POST", "/api/login", { pin: process.env.CHILD_PIN || "1234" })).role === "child", "child PIN");
+let denied = false;
+try { await call("child", "GET", "/api/parent/report"); } catch { denied = true; }
+ok(denied, "child cannot open parent API");
+const leak = await fetch(BASE + "/api/parent/report", { headers: { cookie: jar.parent } });
+ok(leak.status === 403, "a parent cookie gives no parent rights to the child app (no area header)");
+
+console.log("ingest samples");
+const dir = new URL("../samples/", import.meta.url);
+for (const f of readdirSync(dir).filter((x) => x.endsWith(".txt"))) {
+  // first line is the title when short; otherwise the file name (e.g. untitled reference samples)
+  const lines = readFileSync(new URL(f, dir), "utf8").split("\n");
+  const titled = [...lines[0].trim()].length <= 20;
+  const title = titled ? lines[0].trim() : f.replace(/\.txt$/, "");
+  const rest = titled ? lines.slice(1) : lines;
+  const r = await call("parent", "POST", "/api/parent/articles", { title, body: rest.join("\n"), source: "示例（公开）", kind: "sample" });
+  console.log("   ", title, r);
+}
+for (let i = 0; i < 40; i++) {
+  const r = await call("parent", "POST", "/api/parent/pipeline/step");
+  if (r.log) console.log("   ", r.log);
+  if (!r.pending) break;
+}
+const lib = await call("parent", "GET", "/api/parent/articles?status=ready");
+ok(lib.articles.length >= 2, `${lib.articles.length} articles ready`);
+const detail = await call("parent", "GET", `/api/parent/articles/${lib.articles[0].id}`);
+ok(detail.questions.length >= 4, `article has ${detail.questions.length} questions`);
+
+console.log("assessment");
+const home0 = await call("child", "GET", "/api/home");
+if (home0.needAssessment) {
+  // simulate a child who knows 一上–二上, half of 二下, then stops (二下 < 80%)
+  const { pinyin } = await import("pinyin-pro");
+  const results = [];
+  for (let level = 0; level <= 3; level++) {
+    const L = await call("child", "GET", `/api/assessment/level/${level}?seed=7`);
+    L.items.forEach((it, i) => results.push({ level, char: it.char, choice: level < 3 || i % 2 === 0 ? pinyin(it.char) : null }));
+  }
+  const a = await call("child", "POST", "/api/assessment/finish", { results });
+  // levels follow the textbook volumes: 一上+一下+二上 (1150) + half of 二下 ≈ 1375
+  ok(a.estimate > 1250 && a.estimate < 1500 && a.reached === "二年级上册", `estimate ${a.estimate} (约到${a.reached}), known ${a.known}`);
+}
+
+console.log("reading session");
+const home = await call("child", "GET", "/api/home");
+ok(home.article, `today's pick: ${home.article?.title}`);
+const S = await call("child", "POST", "/api/session/start", {});
+ok(S.article.paragraphs.length > 3, `${S.article.paragraphs.length} paragraphs, ${S.newChars.length} new chars, ${S.charQuiz.length} quiz chars`);
+ok(S.article.paragraphs.every((p) => p.py.split(" ").length === [...p.text].filter((c) => /\p{Script=Han}/u.test(c)).length), "pinyin aligned with every paragraph");
+const again = await call("child", "POST", "/api/session/start", {});
+ok(again.session.id === S.session.id, "re-opening resumes the same session");
+
+const sid = S.session.id;
+const dwell = S.article.paragraphs.map((p) => p.text.length * 120);
+await call("child", "POST", `/api/session/${sid}/progress`, { lastParagraph: dwell.length - 1, dwell, activeMs: dwell.reduce((a, b) => a + b, 0), screenMsDelta: 60000, taps: ["森"] });
+
+// answer: first wrong on q0 (look back), then right; others right first time
+const det = await call("parent", "GET", `/api/parent/articles/${S.article.id}`);
+const answerOf = new Map(det.questions.map((q) => [q.id, q.answer]));
+const q0 = S.questions[0];
+const wrong = await call("child", "POST", `/api/session/${sid}/answer`, { questionId: q0.id, choice: (answerOf.get(q0.id) + 1) % q0.options.length });
+ok(!wrong.correct && wrong.hint && wrong.answer === undefined, "wrong first answer → hint, answer not revealed");
+await call("child", "POST", `/api/session/${sid}/answer`, { questionId: q0.id, choice: answerOf.get(q0.id) });
+for (const q of S.questions.slice(1)) await call("child", "POST", `/api/session/${sid}/answer`, { questionId: q.id, choice: answerOf.get(q.id) });
+
+for (const [i, c] of S.charQuiz.entries()) {
+  const right = S.newChars.concat(S.reviewChars).find((x) => x.char === c.char).pinyin;
+  const r = await call("child", "POST", `/api/session/${sid}/charquiz`, { char: c.char, choice: i === 0 ? "zzz" : right });
+  ok(r.correct === (i !== 0), `char quiz ${c.char} ${r.correct ? "right" : "wrong"} → ${r.status}`);
+}
+const F = await call("child", "POST", `/api/session/${sid}/finish`);
+ok(F.verdict.completed, `completed: accuracy ${F.verdict.accuracy}, chars ${F.verdict.charOk}/${F.verdict.charTotal}`);
+ok(F.rewards && F.rewards.total >= 10, `bones +${F.rewards?.total}, chest: ${F.rewards?.chest?.text}`);
+ok(F.rewards.medals.some((m) => m.code === "medal:read1"), "first medal");
+const F2 = await call("child", "POST", `/api/session/${sid}/finish`);
+ok(F2.rewards === null && F2.alreadyCompleted, "finishing twice does not pay twice");
+
+const h2 = await call("child", "GET", "/api/home");
+ok(h2.todayDone && h2.streak === 1 && h2.completed === 1, `home: streak ${h2.streak}, completed ${h2.completed}, bones ${h2.bones}`);
+
+console.log("archive & report");
+const ch = S.newChars[0]?.char;
+if (ch) {
+  const card = await call("child", "GET", `/api/chars/${encodeURIComponent(ch)}`);
+  ok(card.seenIn.length === 1, `「${ch}」 seen in: ${card.seenIn.map((x) => x.title).join(",")} (${card.status})`);
+}
+const col = await call("child", "GET", "/api/collection");
+ok(col.cards.length === S.newChars.length, `collection has ${col.cards.length} cards`);
+const rep = await call("parent", "GET", "/api/parent/report");
+ok(rep.history.length === 1 && rep.radar.some((r) => r.total > 0), "report has history + radar");
+ok(rep.history[0].wrong.length === 1, "report lists the wrong first answer");
+const pp = await call("parent", "GET", "/api/parent/passport");
+ok(pp.sessions.length === 1, "passport lists the reading");
+
+console.log("extra reading");
+const E = await call("child", "POST", "/api/session/start", { extra: true });
+ok(E.article.id !== S.article.id && !E.session.daily, `extra: ${E.article.title}`);
+
+console.log("\nALL GOOD");

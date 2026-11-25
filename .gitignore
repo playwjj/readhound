@@ -4,6 +4,10 @@ node_modules/
 .dev.vars.*
 # The reading corpus is private family data: it lives in D1/R2 only,
 # and local exports or staging copies must never be committed.
-data/
+/data/
 *.sqlite
 *.sqlite3
+!.dev.vars.example
+# source dirs that broader (incl. global) ignore rules would otherwise match
+!src/lib/
+!src/data/

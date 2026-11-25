@@ -1,0 +1,5 @@
+CHILD_PIN=1234
+PARENT_PIN=8888
+SESSION_SECRET=dev-only-secret-change-me
+# 1 = deterministic stub outputs instead of Workers AI (no account needed)
+AI_MOCK=1

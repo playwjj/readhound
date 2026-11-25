@@ -6,7 +6,8 @@
 <title>字游记 · ReadHound</title>
 <meta name="description" content="字游记：陪孩子一天读一篇，字一个个驯服。">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#fdf6e9">
+<meta name="theme-color" content="#fdf6e9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1d1b18" media="(prefers-color-scheme: dark)">
 <!-- iPad home-screen app -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -17,32 +18,9 @@
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<main class="shell">
-  <header class="masthead">
-    <img class="logo" src="/icon.svg" alt="" width="54" height="54">
-    <div>
-      <h1>字游记</h1>
-      <p class="tagline">小猎犬陪你找字，一天读一篇。</p>
-    </div>
-  </header>
-
-  <section class="card" id="today-card">
-    <h2>今日一篇</h2>
-    <p id="today-status">正在准备今天的故事……</p>
-    <button id="start-btn" type="button" disabled>开始阅读</button>
-  </section>
-
-  <section class="card stats">
-    <h2>我的进度</h2>
-    <ul>
-      <li>连续阅读：<strong id="stat-streak">0</strong> 天</li>
-      <li>读完文章：<strong id="stat-articles">0</strong> 篇</li>
-      <li>驯服生字：<strong id="stat-chars">0</strong> 个</li>
-    </ul>
-  </section>
-
-  <footer class="foot">ReadHound · 骨架版，功能建设中</footer>
+<main class="shell" id="app">
+  <p class="center muted" style="margin-top:30vh">小猎犬正在赶来……</p>
 </main>
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

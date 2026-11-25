@@ -90,7 +90,7 @@ What works end to end:
 - **Read-aloud** — the device's Chinese voice. MeloTTS, the only Workers AI
   model with Chinese, was retired on 2026-11-20; set `TTS_MODEL` to
   pre-generate audio again if a Chinese model appears.
-- **Parent console** (`/parent/`, Vue; `/parent.html` redirects) — ability radar, literacy curve,
+- **Parent console** (`/parent/`; `/parent.html` redirects) — ability radar, literacy curve,
   reading history with wrong answers, suggestions, library review
   (flagged / rejected / force / pick today), textbook character lists,
   manual corrections, settings, rewards, printable monthly passport.
@@ -151,18 +151,21 @@ of the allocation stays for the child's live features.
 npm install
 cp .dev.vars.example .dev.vars   # PINs + AI_MOCK=1 (no Workers AI needed)
 npm run db:init:local
-npm run dev                      # http://localhost:8787 (builds the parent console first)
-npm run dev:parent               # parent console with hot reload: http://localhost:5173/parent/
+npm run dev                      # http://localhost:8787 (builds the front end first)
+npm run dev:web                  # front end with hot reload: http://localhost:5173 (+ /parent/)
 npm run seed                     # BASE=http://localhost:8787 — loads samples/
 npm test                         # unit tests (logic, metrics, validation)
 npm run smoke                    # end-to-end against a running dev server
 ```
 
-Front end: the child app (`public/app.js`) is plain ES modules served as
-is; the parent console is Vue 3 + vue-router in `web/parent/`, built by Vite
-into `public/parent/` (not committed — `wrangler dev`/`deploy` run
-`npm run build` via `[build]` in `wrangler.toml`). Both share `public/ui.js`
-(busy buttons, activity bar) and `public/styles.css`.
+Front end: Vue 3 + vue-router, built by Vite into `dist/` (not committed —
+`wrangler dev`/`deploy` run `npm run build` via `[build]` in `wrangler.toml`).
+`web/child/` is the child app at `/` (the reading flow in
+`views/Reading.vue` runs one stage component after another), `web/parent/`
+the parent console at `/parent/`, `web/shared/` what both use (styles, busy
+buttons, activity bar, the hound) and `web/public/` the service worker, icons
+and manifest. The service worker caches the child page and every file it
+references on install, so reading works offline.
 
 With `AI_MOCK=1` the pipeline produces deterministic stub glosses and
 questions so the whole loop can be exercised offline. Remove it to use

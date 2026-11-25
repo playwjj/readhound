@@ -23,7 +23,7 @@
     "difficulty": "node scripts/difficulty.mjs",
     "db:migrate": "wrangler d1 migrations apply readhound --remote",
     "build": "vite build",
-    "dev:parent": "vite"
+    "dev:web": "vite"
   },
   "type": "module",
   "version": "0.1.0",

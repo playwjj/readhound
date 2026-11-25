@@ -11,6 +11,7 @@ node_modules/
 # source dirs that broader (incl. global) ignore rules would otherwise match
 !src/lib/
 !src/data/
+!web/child/src/lib/
 
-# built parent console (vite build → wrangler [build])
-/public/parent/
+# built front end (vite build → wrangler [build])
+/dist/

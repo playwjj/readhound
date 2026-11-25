@@ -51,6 +51,16 @@ export function rankCandidates(candidates, ctx) {
       score += 6;
       reasons.push(`兴趣：${interest.join("、")}`);
     }
+    // the class's current unit: same genre or topic → read alongside school
+    const unit = ctx.unit;
+    if (unit) {
+      const topics = String(unit.topics || "").split(/[、,，\s]+/).filter((t) => t.length >= 2);
+      const hit = topics.find((t) => (c.title || "").includes(t) || tags.includes(t));
+      if (hit || (unit.genre && c.genre === unit.genre)) {
+        score += hit ? 8 : 4;
+        reasons.push(`配合课本：${unit.theme}`);
+      }
+    }
     if (c.charCount >= 600 && c.charCount <= 900) score += 5;
     score -= (c.difficulty || 0) * 0.1;
     out.push({ ...c, newCount: n, newChars: teachable, tier: newTier(n), score: round(score, 1), reason: reasons.join("，") });

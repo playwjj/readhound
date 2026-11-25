@@ -122,6 +122,14 @@ practice). The pre-reading task comes in one object with its question.
   so a homophone written by the recogniser is never a reading error.
   Shows accuracy, characters per minute and the words to practise
   (tap to hear); 15 paragraphs a day; parent report shows the averages.
+- **课本进度** — the child's textbook by unit (统编版/人教社 四年级, the
+  2026 revision now in use): theme, 语文要素, lessons, the unit's 识字表 /
+  写字表 (pasted from the book via iPad Live Text). Setting the current unit
+  makes this and the next unit's characters the targets, puts earlier
+  units' unknown characters into review, and leans article picks and
+  generated stories to the unit's theme, genre and skill. A 四上 skeleton
+  is pre-filled from published change notes, marked 待核对 until the parent
+  checks it against the book.
 - **AI 定制故事** (§11) — on demand (optionally starring the child; hero
   set in settings) or automatically when fewer than two unread articles
   suit the child (cron, max one a day). Each story targets due-review

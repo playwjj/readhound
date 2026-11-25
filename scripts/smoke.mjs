@@ -175,6 +175,17 @@ const after = (await call("parent", "GET", "/api/parent/articles")).articles;
 const autos = after.filter((a) => a.id > G.id);
 ok(after.length === before + 1 && autos.length === 1, `cron queued exactly one 补位 story (#${autos[0]?.id} ${autos[0]?.status})`);
 
+console.log("textbook progress");
+const TU = await call("parent", "GET", "/api/parent/units");
+ok(TU.units.length === 8 && TU.units.every((u) => !u.verified), "四上 skeleton seeded (8 units, all 待核对)");
+await call("parent", "PUT", "/api/parent/units", { ...TU.units[0], recognise: "潮凭顿踮罩滚", write: "潮据堤" });
+await call("parent", "PUT", "/api/parent/units", { ...TU.units[5], recognise: "砌嘉峪隘蜿蜒", write: "砌峪", verified: true });
+const cur = await call("parent", "POST", "/api/parent/units/current", { volume: "四上", unit: 6 });
+ok(cur.upcoming >= 6 && cur.review > 0, `current unit 四上6: ${cur.upcoming} target chars, ${cur.review} earlier chars into review`);
+const GU = await call("parent", "POST", "/api/parent/generate", { hero: false });
+ok(GU.spec.genre === "history" && TU.units[5].topics.includes(GU.spec.theme) && GU.spec.targets.some((c) => "砌嘉峪隘蜿蜒".includes(c)), `story follows the unit: ${GU.spec.theme} / ${GU.spec.genre}, targets ${GU.spec.targets.join("")}`);
+await call("parent", "POST", `/api/parent/articles/${GU.id}/delete`);
+
 console.log("AI budget");
 const U = await call("parent", "GET", "/api/parent/ai-usage");
 ok(U.ingestToday > 0 && U.rows.some((r) => r.purpose === "retell"), `usage metered: ${U.ingestToday} ingest calls today, retell/stt counted apart`);

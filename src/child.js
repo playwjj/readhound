@@ -5,6 +5,7 @@ import { paragraphs, countHan, rankOf, newCharsFor, textbookInfo, splitSentences
 import { readingOf, pinyinChoices } from "./lib/pinyin.js";
 import { pinyin as pinyinPro } from "pinyin-pro";
 import { ensureGlosses, enqueueGenerated } from "./pipeline.js";
+import { currentUnit } from "./curriculum.js";
 import {
   cnDate, addDays, rankCandidates, adaptTarget, verdict, srsUpdate, sampleLevel, scoreAssessment,
   ASSESS_LEVELS, ASSESS_PER_LEVEL, LEVEL_NAMES, BONES, puppyStage, mapPosition, medalsFor, streakFrom, MAX_FREEZES,
@@ -66,7 +67,7 @@ async function pickContext(env, today, settings) {
   const due = new Set((await all(env, "SELECT char FROM chars WHERE status IN ('seen','familiar') AND due_at <= ?", today)).map((r) => r.char));
   const upcoming = new Set((await all(env, "SELECT char FROM textbook_chars")).map((r) => r.char));
   const recent = await all(env, "SELECT a.genre FROM daily_pick p JOIN articles a ON a.id = p.article_id WHERE p.date < ? ORDER BY p.date DESC LIMIT 3", today);
-  return { known, due, upcoming, recentGenres: recent.map((r) => r.genre), interests: settings.interests || [], targetNew: settings.target_new };
+  return { known, due, upcoming, recentGenres: recent.map((r) => r.genre), interests: settings.interests || [], targetNew: settings.target_new, unit: await currentUnit(env) };
 }
 
 async function readArticleIds(env) {
@@ -113,7 +114,9 @@ export async function maybeAutoGenerate(env) {
   if (suitable >= 2) return null;
   await setSetting(env, "last_auto_generate", today);
   const interests = s.interests || [];
-  return enqueueGenerated(env, { auto: true, theme: interests.length ? interests[new Date().getDate() % interests.length] : "" });
+  // the current textbook unit wins over interests (enqueueGenerated reads it when theme is empty)
+  const unit = await currentUnit(env);
+  return enqueueGenerated(env, { auto: true, theme: unit || !interests.length ? "" : interests[new Date().getDate() % interests.length] });
 }
 
 // ================================================================ home

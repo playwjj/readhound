@@ -43,7 +43,7 @@ async function api(method, path, body) {
 const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
 
 // ================================================================ shell
-const TABS = [["report", "报告"], ["library", "书库"], ["add", "添加文章"], ["chars", "生字"], ["settings", "设置"], ["rewards", "奖励"], ["passport", "阅读护照"]];
+const TABS = [["report", "报告"], ["library", "书库"], ["add", "添加文章"], ["textbook", "课本"], ["chars", "生字"], ["settings", "设置"], ["rewards", "奖励"], ["passport", "阅读护照"]];
 let tab = location.hash.slice(1) || "report";
 
 function frame(content) {
@@ -246,6 +246,61 @@ const VIEWS = {
         h("p", { class: "muted" }, "按页面标题抓取一页正文（低频、单页）。繁体会自动转为简体再分析；文言文通常会因句式和用字被淘汰或标为待复核。"),
         h("div", { class: "grid2" }, wsTitle, wsGenre), h("div", { class: "row end", style: "margin-top:10px" }, h("button", { onclick: importWs }, "导入"))),
       h("p", { class: "muted", style: "font-size:14px" }, "资源只进不出：所有文章只存在你的 Cloudflare D1 里，不进代码仓库、不外传。"));
+  },
+
+  async textbook() {
+    const d = await api("GET", "/api/parent/units");
+    const cur = d.current;
+    const isCur = (u) => cur && cur.volume === u.volume && cur.unit === u.unit;
+    const editor = (u) => {
+      const f = {
+        theme: h("input", { value: u.theme || "" }), focus: h("input", { value: u.focus || "" }),
+        lessons: h("textarea", { style: "min-height:60px" }, u.lessons || ""), topics: h("input", { value: u.topics || "" }),
+        skill: h("select", {}, h("option", { value: "" }, "—"), ...Object.entries(d.skills).map(([k, v]) => h("option", { value: k }, v))),
+        genre: h("select", {}, h("option", { value: "" }, "—"), ...d.genres.map((g) => h("option", { value: g }, GENRES[g] || g))),
+        recognise: h("textarea", { style: "min-height:60px", placeholder: "书末“识字表”本单元的字：拍照后用 iPad 的实况文本复制，直接粘贴" }, u.recognise || ""),
+        write: h("textarea", { style: "min-height:60px", placeholder: "书末“写字表”本单元的字" }, u.write || ""),
+        verified: h("select", {}, h("option", { value: "0" }, "还没核对"), h("option", { value: "1" }, "已按孩子的课本核对")),
+      };
+      f.skill.value = u.skill || ""; f.genre.value = u.genre || ""; f.verified.value = String(u.verified || 0);
+      const lab = (t, el, help) => h("div", {}, h("label", {}, t), el, help ? h("div", { class: "muted", style: "font-size:13px" }, help) : null);
+      return h("div", { style: "margin-top:12px" },
+        h("div", { class: "grid2" }, lab("单元主题", f.theme), lab("语文要素（单元导语）", f.focus)),
+        lab("课文", f.lessons),
+        h("div", { class: "grid2" }, lab("选文关键词", f.topics, "顿号分隔；书库里标题或标签含这些词的文章会优先"), h("div", { class: "grid2" }, lab("侧重能力", f.skill), lab("偏向题材", f.genre))),
+        h("div", { class: "grid2" }, lab(`识字表（${[...(u.recognise || "")].length} 字）`, f.recognise), lab(`写字表（${[...(u.write || "")].length} 字）`, f.write)),
+        h("div", { class: "row end", style: "margin-top:10px" }, f.verified,
+          h("button", { class: "small", onclick: async () => {
+            try {
+              await api("PUT", "/api/parent/units", { volume: u.volume, unit: u.unit, ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value])), verified: f.verified.value === "1" });
+              toast("已保存"); render();
+            } catch (e) { toast(e.message); }
+          } }, "保存")));
+    };
+    const rows = d.units.map((u) => {
+      const box = h("div", { class: "card", style: isCur(u) ? "outline:3px solid var(--accent)" : "" });
+      let open = false;
+      box.append(
+        h("div", { class: "row" },
+          h("b", {}, `${u.volume} 第${u.unit}单元 · ${u.theme || ""}`),
+          isCur(u) ? h("span", { class: "pill ready" }, "当前") : null,
+          h("span", { class: `pill ${u.verified ? "ready" : "flagged"}` }, u.verified ? "已核对" : "待核对"),
+          h("span", { class: "spacer" }),
+          h("span", { class: "muted", style: "font-size:14px" }, `识字 ${[...(u.recognise || "")].length} · 写字 ${[...(u.write || "")].length}`),
+          isCur(u) ? null : h("button", { class: "small", onclick: async () => {
+            try { const r = await api("POST", "/api/parent/units/current", { volume: u.volume, unit: u.unit }); toast(`已设为当前单元：${r.upcoming} 个字作为目标，${r.review} 个前面学过的字进入复习`, 4000); render(); } catch (e) { toast(e.message); }
+          } }, "设为当前"),
+          h("button", { class: "small ghost", onclick: () => { open = !open; if (open) box.append(ed = editor(u)); else ed.remove(); } }, "编辑")),
+        h("div", { class: "muted", style: "font-size:14px;margin-top:4px" }, `语文要素：${u.focus || "—"}`),
+        h("div", { style: "font-size:14px" }, `课文：${u.lessons || "—"}`));
+      let ed;
+      return box;
+    });
+    return h("div", {},
+      h("div", { class: "card" }, h("h2", {}, "课本进度"),
+        h("p", { class: "muted" }, "按孩子的课本逐单元填好（2026 秋季起四年级用新修订版）。设为“当前单元”后：本单元和下一单元的生字成为选文和 AI 故事的目标；前面单元学过、孩子还不认识的字进入复习；选文和出题向本单元的主题与语文要素倾斜。"),
+        h("p", { class: "muted", style: "font-size:14px" }, "预填的单元结构来自公开的改版解读，标“待核对”的请对照课本目录和单元导语修改。生字请从书末“识字表”“写字表”拍照，用 iPad 的实况文本复制粘贴。")),
+      ...rows);
   },
 
   async chars() {

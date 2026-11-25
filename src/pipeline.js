@@ -6,6 +6,7 @@ import { normalise, paragraphs, articleMetrics, hardScreen, rankOf, CORE_RANK, M
 import { annotate, readingAt, readingOf, polyphonesIn, applyFixes } from "./lib/pinyin.js";
 import { screenArticle, glossChars, makeQuestions, makeSkills, tts, checkPolyphones, writeStory, rewriteStory, GENRES, isQuotaError, utcDay } from "./lib/ai.js";
 import { cnDate, addDays } from "./lib/logic.js";
+import { currentUnit } from "./curriculum.js";
 
 export const STAGES = ["generate", "metrics", "screen", "pinyin", "polyphones", "encounters", "glosses", "questions", "skills", "audio"];
 /** Stages whose failure must not cost the article: they are skipped after the last attempt. */
@@ -280,6 +281,14 @@ export async function storyTargets(env) {
 /** Queue a story to be written by the pipeline. */
 export async function enqueueGenerated(env, { hero = false, genre = null, theme = "", focus = null, auto = false } = {}) {
   const s = await getSettings(env);
+  // follow the class: the current textbook unit supplies theme, genre and skill when not given
+  const unit = await currentUnit(env);
+  if (unit) {
+    const topics = String(unit.topics || "").split(/[、,，\s]+/).filter((t) => t.length >= 2);
+    if (!theme && topics.length) theme = topics[Math.floor(Math.random() * topics.length)];
+    if (!genre && unit.genre) genre = unit.genre;
+    if (!focus && unit.skill) focus = unit.skill;
+  }
   const spec = {
     auto,
     hero: hero ? { name: s.protagonist?.name || s.child_name, traits: s.protagonist?.traits || "", friends: s.protagonist?.friends || "" } : null,

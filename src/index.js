@@ -4,6 +4,7 @@
 import { configured, roleForPin, issue, clear, rolesOf, throttled, noteFail, noteOk } from "./auth.js";
 import * as child from "./child.js";
 import * as parent from "./parent.js";
+import * as curriculum from "./curriculum.js";
 import { drain } from "./pipeline.js";
 import { cnDate } from "./lib/logic.js";
 import { first } from "./db.js";
@@ -51,6 +52,9 @@ const routes = [
   ["POST", /^\/api\/parent\/articles\/(\d+)\/(approve|retire|requeue|force|pick|delete)$/, "parent", (env, ctx, m) => parent.articleAction(env, Number(m[1]), m[2])],
   ["POST", /^\/api\/parent\/import\/wikisource$/, "parent", async (env, ctx, m, req) => parent.importWikisource(env, await body(req))],
   ["POST", /^\/api\/parent\/pipeline\/step$/, "parent", (env) => parent.pipelineStep(env)],
+  ["GET", /^\/api\/parent\/units$/, "parent", (env) => curriculum.listUnits(env)],
+  ["PUT", /^\/api\/parent\/units$/, "parent", async (env, ctx, m, req) => curriculum.saveUnit(env, await body(req))],
+  ["POST", /^\/api\/parent\/units\/current$/, "parent", async (env, ctx, m, req) => curriculum.setCurrent(env, await body(req))],
   ["GET", /^\/api\/parent\/ai-usage$/, "parent", (env) => parent.aiUsage(env)],
   ["POST", /^\/api\/parent\/generate$/, "parent", async (env, ctx, m, req) => parent.generate(env, await body(req))],
   ["GET", /^\/api\/parent\/settings$/, "parent", (env) => parent.getParentSettings(env)],

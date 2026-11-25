@@ -1,7 +1,11 @@
 {
   "description": "ReadHound（字游记）— a family reading coach: AI screens and prepares real reading materials, tracks every new character, and trains reading comprehension as a quest.",
   "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.11",
     "hanzi": "4.1.2",
+    "vite": "^8.3.8",
+    "vue": "^3.5.46",
+    "vue-router": "^5.5.1",
     "wrangler": "^4.68.0"
   },
   "name": "readhound",
@@ -17,7 +21,9 @@
     "reset:local": "rm -rf .wrangler/state/v3/d1 && wrangler d1 execute readhound --local --file=db/schema.sql",
     "seed": "node scripts/seed.mjs",
     "difficulty": "node scripts/difficulty.mjs",
-    "db:migrate": "wrangler d1 migrations apply readhound --remote"
+    "db:migrate": "wrangler d1 migrations apply readhound --remote",
+    "build": "vite build",
+    "dev:parent": "vite"
   },
   "type": "module",
   "version": "0.1.0",

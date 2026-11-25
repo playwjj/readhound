@@ -244,7 +244,7 @@ function loginView() {
     else if (k === "✓") {
       try {
         const r = await api("POST", "/api/login", { pin });
-        if (r.role === "parent" && location.search.includes("parent")) location.href = "/parent.html";
+        if (r.role === "parent" && location.search.includes("parent")) location.href = "/parent/";
         else boot();
         return;
       } catch (e) {
@@ -365,7 +365,7 @@ function homeView() {
       h("button", { onclick: collectionView }, h("span", { class: "ico" }, "📖"), "生字图鉴"),
       h("button", { onclick: mapView }, h("span", { class: "ico" }, "🗺"), "闯关地图"),
       h("button", { onclick: skillsView }, h("span", { class: "ico" }, "🎒"), "技能法宝")))),
-    h("div", { class: "foot" }, h("a", { href: "/parent.html" }, "家长入口")));
+    h("div", { class: "foot" }, h("a", { href: "/parent/" }, "家长入口")));
 }
 
 function mapStrip(m, completed) {

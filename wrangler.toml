@@ -3,6 +3,11 @@ name = "readhound"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 
+# Builds the parent console (Vue, web/parent → public/parent) before dev/deploy.
+[build]
+command = "npm run build"
+watch_dir = "web"
+
 # Web app (PWA) static assets; /api/* is handled by the Worker first.
 [assets]
 directory = "./public"

@@ -8,10 +8,10 @@ import { ensureGlosses } from "./pipeline.js";
 import {
   cnDate, addDays, rankCandidates, adaptTarget, verdict, srsUpdate, sampleLevel, scoreAssessment,
   ASSESS_LEVELS, ASSESS_PER_LEVEL, LEVEL_NAMES, BONES, puppyStage, mapPosition, medalsFor, streakFrom, MAX_FREEZES,
-  eyeCare, skillsFor, MAX_ATTEMPTS,
+  eyeCare, skillsFor, MAX_ATTEMPTS, RETELL_PASS, RETELL_MAX,
 } from "./lib/logic.js";
 import { openChest } from "./data/surprises.js";
-import { GENRE_NAMES, ABILITY_NAMES } from "./lib/ai.js";
+import { GENRE_NAMES, ABILITY_NAMES, transcribe, assessRetell } from "./lib/ai.js";
 
 const MAX_NEW_CARDS = 8;
 /** The new characters a session teaches: the most useful (most frequent) first. */
@@ -191,6 +191,8 @@ export async function startSession(env, ctx, { extra = false } = {}) {
   const predict = has("predict") ? qs.find((q) => q.kind === "predict") : null;
   const locates = has("locate") ? qs.filter((q) => q.kind === "locate") : [];
   const sections = has("summarise") ? qs.filter((q) => q.kind === "section") : [];
+  const retellQ = has("retell") ? qs.find((q) => q.kind === "retell") : null;
+  const retells = retellQ ? (await first(env, "SELECT COUNT(*) n FROM retells WHERE session_id = ?", s.id)).n : 0;
   const day = await first(env, "SELECT screen_ms FROM days WHERE date = ?", today);
 
   const card = (p) => {
@@ -221,6 +223,8 @@ export async function startSession(env, ctx, { extra = false } = {}) {
       return { id: q.id, prompt: q.prompt, paras: shown.map((i) => ({ index: i, sentences: splitSentences(paras[i]) })) };
     }),
     sections: sections.map((q) => ({ id: q.id, prompt: q.prompt, options: JSON.parse(q.options), ...safeJSON(q.meta, {}) })),
+    // the key points stay on the server: the child retells freely
+    retell: retellQ ? { points: JSON.parse(retellQ.options).length, triesLeft: Math.max(0, RETELL_MAX - retells) } : null,
     charQuiz: plan.filter((p) => p.quiz).map((p, i) => ({
       char: p.char, word: gl.get(p.char)?.word || null, review: !!p.review,
       options: pinyinChoices(p.py, others.filter((o) => o !== p.py), i + s.id, validReadings(p.char)),
@@ -450,6 +454,45 @@ export async function finish(env, id) {
       streak: st.streak, freezes: st.freezes, freezeEarned: !!st.freezeEarned,
       puppy, puppyGrew: puppy.key !== before.key, map: mapPosition(completed), completed,
     },
+  };
+}
+
+/**
+ * 语音复述 (§7): after completing, the child retells the story aloud.
+ * Whisper → simplified text → Qwen checks the key points by meaning.
+ * The only live model call on the reading path, capped per session.
+ */
+export async function retell(env, id, request) {
+  const s = await ownSession(env, id);
+  if (s.level < 2) throw new HttpError(409, "先完成今天的阅读，再来复述");
+  const q = await first(env, "SELECT options FROM questions WHERE article_id = ? AND kind = 'retell'", s.article_id);
+  if (!q) throw new HttpError(404, "这篇文章没有复述要点");
+  const tries = (await first(env, "SELECT COUNT(*) n FROM retells WHERE session_id = ?", id)).n;
+  if (tries >= RETELL_MAX) throw new HttpError(429, "今天这篇已经讲过两次啦，明天再讲新故事吧");
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length < 2000) throw new HttpError(400, "录音太短了，再讲一遍吧");
+  if (bytes.length > 6 * 1024 * 1024) throw new HttpError(413, "录音太长了，讲两分钟以内就好");
+  const transcript = await transcribe(env, bytes);
+  if (countHan(transcript) < 8) return { tooShort: true, transcript, message: "小猎犬没听清楚，靠近一点、大声一点再讲一遍？" };
+
+  const a = await first(env, "SELECT title FROM articles WHERE id = ?", s.article_id);
+  const points = JSON.parse(q.options);
+  const r = await assessRetell(env, { title: a.title, points, transcript });
+  await run(env, "INSERT INTO retells (session_id, transcript, covered, total, feedback, tip) VALUES (?, ?, ?, ?, ?, ?)",
+    id, transcript, JSON.stringify(r.covered), points.length, r.feedback, r.tip);
+
+  const passed = r.covered.length / points.length >= RETELL_PASS;
+  let bones = 0;
+  if (passed && s.level < 3) {
+    await run(env, "UPDATE sessions SET level = 3 WHERE id = ?", id);
+    await run(env, "INSERT INTO ledger (amount, reason, ref) VALUES (?, '完成复述', ?)", BONES.retell, `retell:${id}`);
+    await run(env, "UPDATE sessions SET bones = bones + ? WHERE id = ?", BONES.retell, id);
+    bones = BONES.retell;
+  }
+  return {
+    transcript, feedback: r.feedback, tip: r.tip,
+    covered: r.covered, missed: points.filter((p) => !r.covered.includes(p)),
+    passed, level: passed ? 3 : s.level, bones, triesLeft: RETELL_MAX - tries - 1,
   };
 }
 

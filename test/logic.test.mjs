@@ -6,7 +6,7 @@ import {
   verdict, srsUpdate, rankCandidates, adaptTarget, scoreAssessment, sampleLevel, streakFrom, addDays,
   eyeCare, skillsFor, medalsFor, puppyStage, cnDate, levelChars, levelSize, levelReached, ASSESS_LEVELS,
 } from "../src/lib/logic.js";
-import { extractJSON, validateQuestions, validateGlosses, validateScreen, validatePolyphones, validateSkills } from "../src/lib/ai.js";
+import { extractJSON, validateQuestions, validateGlosses, validateScreen, validatePolyphones, validateSkills, validateRetell } from "../src/lib/ai.js";
 import { splitBulk, wikiHtmlToText, suggest } from "../src/parent.js";
 import { readFileSync } from "node:fs";
 
@@ -342,4 +342,11 @@ test("validateSkills: positions, exact evidence, contiguous sections", () => {
   assert.throws(() => validateSkills({ ...good, locate: [{ prompt: "?", evidence: "原文没有这句话呀" }] }, body, true), /copied exactly/);
   // a broken prediction is dropped, not fatal
   assert.ok(!validateSkills({ ...good, predict: { ...good.predict, reveal: 1 } }, body, true).some((x) => x.kind === "predict"));
+});
+
+test("validateRetell matches covered points by text, never by index", () => {
+  const pts = ["阿嗅闻到墨香", "阿嗅猜出森字", "阿嗅每天来读书"];
+  const r = validateRetell({ covered: ["阿嗅猜出森字", "每天来读书", "1", "编出来的要点"], feedback: "讲得好", tip: "" }, pts);
+  assert.deepEqual(r.covered, ["阿嗅猜出森字", "阿嗅每天来读书"]);
+  assert.equal(validateRetell({ covered: [] }, pts).covered.length, 0);
 });

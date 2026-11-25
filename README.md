@@ -110,7 +110,14 @@ Models never return answer indexes: they write the right text and the
 wrong ones, and code places them (index numbering was mixed 0-/1-based in
 practice). The pre-reading task comes in one object with its question.
 
-Still to do from phase 2: voice retelling; AI-generated supplementary stories.
+- **语音复述** — after completing, the child retells the story aloud
+  (MediaRecorder on iPad → Whisper → simplified text → Qwen checks the
+  3–5 key points by meaning, so homophone errors in the transcript do not
+  count against the child). ≥60% of the points = level 3 「完成复述」 +3
+  bones. The only live model call on the reading path: two per session.
+  `@cf/openai/whisper` (handles iPad AAC); `STT_MODEL` overrides.
+
+Still to do from phase 2: AI-generated supplementary stories.
 
 ## Development
 
@@ -172,6 +179,8 @@ new one once before deploying the code that needs it:
 
 ```sh
 npm run db:migrate 0001_polyphones_fixed
+npm run db:migrate 0002_question_meta
+npm run db:migrate 0003_retells
 ```
 
 Then attach the custom domain (e.g. read.404401.xyz) and add the page to

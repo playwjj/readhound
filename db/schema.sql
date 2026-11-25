@@ -215,3 +215,16 @@ CREATE TABLE IF NOT EXISTS assessments (
   estimate INTEGER NOT NULL,
   detail   TEXT NOT NULL                 -- JSON per level
 );
+
+-- Voice retelling (语音复述): transcript and the key points it covered.
+CREATE TABLE IF NOT EXISTS retells (
+  id          INTEGER PRIMARY KEY,
+  session_id  INTEGER NOT NULL REFERENCES sessions(id),
+  transcript  TEXT NOT NULL,
+  covered     TEXT NOT NULL,             -- JSON: key points the child told
+  total       INTEGER NOT NULL,          -- number of key points
+  feedback    TEXT,
+  tip         TEXT,
+  at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_retells_session ON retells(session_id);

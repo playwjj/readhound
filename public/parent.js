@@ -155,6 +155,8 @@ const VIEWS = {
                 v && v.charFirstOk != null && s.charOk > v.charFirstOk ? h("div", { class: "muted", style: "font-size:13px" }, `再见一面后 ${s.charOk}/${s.charTotal}`) : null),
               h("td", {}, s.bones || 0));
             const rows = [row];
+            if (s.retell) rows.push(h("tr", {}, h("td", {}), h("td", { colspan: 8 }, h("details", {}, h("summary", { class: "muted" }, `🎤 复述：讲到 ${s.retell.covered.length}/${s.retell.total} 个要点`),
+              h("div", { style: "margin:6px 0" }, "转写：", s.retell.transcript), h("div", { class: "muted" }, "讲到：", s.retell.covered.join("；") || "—")))));
             if (s.wrong.length) rows.push(h("tr", {}, h("td", {}), h("td", { colspan: 8 }, h("details", {}, h("summary", { class: "muted" }, `错题 ${s.wrong.length}`),
               ...s.wrong.map((w) => h("div", { style: "margin:6px 0" }, h("span", { class: "pill" }, w.ability), ` ${w.prompt}（第 ${w.attempt} 次）选了「${w.chose}」，正确是「${w.right}」`))))));
             return rows;

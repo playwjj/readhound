@@ -34,6 +34,7 @@ const routes = [
   ["POST", /^\/api\/session\/(\d+)\/answer$/, "child", async (env, ctx, m, req) => child.answer(env, Number(m[1]), await body(req))],
   ["POST", /^\/api\/session\/(\d+)\/charquiz$/, "child", async (env, ctx, m, req) => child.charQuiz(env, Number(m[1]), await body(req))],
   ["POST", /^\/api\/session\/(\d+)\/finish$/, "child", (env, ctx, m) => child.finish(env, Number(m[1]))],
+  ["POST", /^\/api\/session\/(\d+)\/retell$/, "child", (env, ctx, m, req) => child.retell(env, Number(m[1]), req)],
   ["GET", /^\/api\/assessment\/level\/(\d+)$/, "child", (env, ctx, m, req) => child.assessmentLevel(Number(m[1]), Number(new URL(req.url).searchParams.get("seed")) || 1)],
   ["POST", /^\/api\/assessment\/finish$/, "child", async (env, ctx, m, req) => child.finishAssessment(env, await body(req))],
   ["GET", /^\/api\/chars\/(.+)$/, "child", (env, ctx, m) => child.charCard(env, decodeURIComponent(m[1]))],

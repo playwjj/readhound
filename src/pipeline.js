@@ -160,7 +160,7 @@ const STAGE_FN = {
   /** Phase-2 skills: prediction (stories only), evidence sentence, section summaries. */
   async skills(env, a) {
     const list = await makeSkills(env, { title: a.title, body: a.body, genre: a.genre });
-    await run(env, "DELETE FROM questions WHERE article_id = ? AND kind IN ('predict','locate','section')", a.id);
+    await run(env, "DELETE FROM questions WHERE article_id = ? AND kind IN ('predict','locate','section','retell')", a.id);
     await batch(env, list.map((x, i) => stmt(env,
       "INSERT INTO questions (article_id, ord, kind, ability, prompt, options, answer, evidence, explain, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       a.id, 100 + i, x.kind, x.ability, x.prompt, JSON.stringify(x.options), x.answer, x.evidence, x.explain || null, JSON.stringify(x.meta))));

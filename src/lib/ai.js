@@ -2,7 +2,7 @@
 // validated in code and retried; nothing unvalidated reaches the child.
 // Set AI_MOCK = "1" (wrangler.toml [env.dev] / .dev.vars) to run the whole
 // pipeline locally without an account: outputs are deterministic stubs.
-import { paragraphs, isHan, locateSentence, splitSentences } from "./text.js";
+import { paragraphs, isHan, locateSentence, splitSentences, normalise, countHan } from "./text.js";
 
 export const DEFAULT_MODEL = "@cf/qwen/qwen3.8-27b";
 // Read-aloud: MeloTTS (the only Workers AI model with Chinese) was retired on
@@ -17,7 +17,7 @@ export const GENRE_NAMES = {
 };
 export const ABILITIES = ["extract", "word", "infer", "summarise", "theme"];
 export const ABILITY_NAMES = {
-  extract: "信息提取", word: "词语理解", infer: "推断", summarise: "概括", theme: "道理体会", locate: "回文定位", predict: "预测",
+  extract: "信息提取", word: "词语理解", infer: "推断", summarise: "概括", theme: "道理体会", locate: "回文定位", predict: "预测", retell: "复述",
 };
 
 // ------------------------------------------------------------------ chat
@@ -311,7 +311,8 @@ ${numbered(body).slice(0, 3400)}
 {
  "predict": ${narrative ? `{"after": 读完第几段停下来预测（选情节转折之前，不要选最后两段）, "prompt": "猜一猜：接下来会怎样？（一句话，20 字以内，结合当时情节）", "happens": "后文实际发生的走向，20 字以内", "alternatives": ["另外两个也说得通、但没有发生的走向，每个 20 字以内"], "reveal": 在第几段揭晓, "explain": "揭晓时的一句话"}` : "null"},
  "locate": [{"prompt": "一道推断题，答案需要回原文找依据，题干 30 字以内", "evidence": "原文中能证明答案的那一句话，必须一字不差地从正文复制，10-40 字", "answer_text": "答案，一句话"}],
- "sections": [{"from": 起始段号, "to": 结束段号, "summary": "准确概括这部分的一句话，20 字以内", "distractors": ["两个不准确的概括（可以是别的部分的内容，或只说了一个细节），每个 20 字以内"]}]
+ "sections": [{"from": 起始段号, "to": 结束段号, "summary": "准确概括这部分的一句话，20 字以内", "distractors": ["两个不准确的概括（可以是别的部分的内容，或只说了一个细节），每个 20 字以内"]}],
+ "points": ["复述这篇文章时应该讲到的 3–5 个要点，按文章顺序，每个 15 字以内"]
 }
 规则：
 - locate 出 1–2 题，题干是一个具体的问题（如“阿嗅为什么……？”），不要出“哪种说法正确”这类离开选项就答不了的题；evidence 必须是正文原句；
@@ -357,6 +358,11 @@ export function validateSkills(o, body, narrative) {
     return { kind: "section", ability: "summarise", prompt: `第 ${from + 1}${to > from ? `–${to + 1}` : ""} 段主要说什么？`, options, answer, evidence: from, explain: null, meta: { from, to } };
   });
   if (next !== n) throw new Error("sections: must cover every paragraph");
+  // retelling key points: optional (no retelling for this article if missing)
+  const points = (Array.isArray(o.points) ? o.points : []).map((x) => String(x).trim()).filter((x) => x && [...x].length <= 24);
+  if (points.length >= 3) {
+    built.push({ kind: "retell", ability: "retell", prompt: "用自己的话讲一讲这篇文章", options: points.slice(0, 5), answer: 0, evidence: null, explain: null, meta: {} });
+  }
   if (!out.some((x) => x.kind === "locate")) throw new Error("locate: evidence must be copied exactly from the text");
   return [...out, ...built];
 }
@@ -380,8 +386,57 @@ function mockSkills(body, narrative) {
       { from: third + 1, to: third * 2, summary: "（模拟）中间部分", distractors: ["（模拟）错误一", "（模拟）错误二"] },
       { from: third * 2 + 1, to: n, summary: "（模拟）结尾部分", distractors: ["（模拟）错误一", "（模拟）错误二"] },
     ],
+    points: ["（模拟）要点一", "（模拟）要点二", "（模拟）要点三"],
   };
   return validateSkills(o, body, narrative);
+}
+
+// ------------------------------------------------------------------ retelling (live, once or twice a day)
+/** Speech → simplified text. Whisper writes traditional characters; normalise. */
+export async function transcribe(env, bytes) {
+  if (env.AI_MOCK === "1") return "（模拟转写）我讲了要点一、要点二，还有要点三。";
+  const models = [env.STT_MODEL || "@cf/openai/whisper", "@cf/openai/whisper-large-v3-turbo"];
+  let lastErr;
+  for (const model of [...new Set(models)]) {
+    try {
+      let input;
+      if (model.includes("large-v3")) {
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        input = { audio: btoa(bin), language: "zh" };
+      } else input = { audio: [...bytes] };
+      const r = await env.AI.run(model, input);
+      return normalise(String(r?.text || "")).replace(/\n/g, "");
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[stt] ${model} failed:`, e?.message || e);
+    }
+  }
+  throw lastErr;
+}
+
+export function retellPrompt(title, points, transcript) {
+  return `一个四年级孩子读完《${title}》后，用自己的话复述了一遍。下面是语音转写，可能有同音错字（如“阿秀”其实是“阿嗅”），请按意思判断，不要按字面。
+转写：${transcript.slice(0, 800)}
+
+这篇文章的复述要点：
+${points.map((p) => `- ${p}`).join("\n")}
+
+输出 JSON：
+{"covered": ["孩子讲到了的要点，从上面的列表里一字不差地抄写"], "feedback": "一句具体的鼓励，提到孩子讲得好的地方，20 字以内", "tip": "下次可以补充的一点，20 字以内；全部讲到则为空字符串"}`;
+}
+
+/** covered must be copied from the list: match by text, never by index. */
+export function validateRetell(o, points) {
+  if (!o || typeof o !== "object") throw new Error("expected object");
+  const said = (Array.isArray(o.covered) ? o.covered : []).map((x) => String(x).trim());
+  const covered = points.filter((p) => said.some((x) => x === p || x.includes(p) || (x.length >= 4 && p.includes(x))));
+  return { covered, feedback: String(o.feedback || "讲得真不错！").slice(0, 40), tip: String(o.tip || "").slice(0, 40) };
+}
+
+export async function assessRetell(env, { title, points, transcript }) {
+  if (env.AI_MOCK === "1") return { covered: points.slice(), feedback: "（模拟）讲得很完整！", tip: "" };
+  return generate(env, retellPrompt(title, points, transcript), (o) => validateRetell(o, points), { maxTokens: 400, temperature: 0.2 });
 }
 
 // ------------------------------------------------------------------ polyphones

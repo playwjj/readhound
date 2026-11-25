@@ -1069,6 +1069,7 @@ function resultView(res, already) {
         h("p", {}, "想再读一遍也可以，不过骨头只发一次哦。"),
         h("div", { class: "row center" },
           h("button", { class: "soft", onclick: wholeText }, "📄 再读一遍"),
+          retellButton(),
           h("button", { onclick: leaveReading }, "回家"))));
     return;
   }
@@ -1122,7 +1123,90 @@ function resultView(res, already) {
       rw.medals.length ? h("div", {}, ...rw.medals.map((m) => h("span", { class: "medal" }, "🏅 ", m.title))) : null,
       chestBox,
       h("div", { class: "row center", style: "margin-top:16px" },
+        retellButton(),
         h("button", { class: "big", onclick: leaveReading }, "回家"))));
+}
+
+// ---------------------------------------------------------------- 7. voice retelling (语音复述)
+function retellButton() {
+  if (!R.retell || R.retell.triesLeft <= 0) return null;
+  return h("button", { class: "soft", onclick: retellView }, "🎤 讲给小猎犬听 +3🦴");
+}
+
+function retellView() {
+  const canRecord = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+  const status = h("p", { class: "muted" }, "按下按钮，用自己的话把故事讲一遍：讲了什么事、谁做了什么、最后怎样了。");
+  const timer = h("div", { class: "count", style: "font-size:40px;font-variant-numeric:tabular-nums" }, "0:00");
+  const out = h("div", {});
+  let rec = null, chunks = [], t0 = 0, tick = null, stream = null;
+  const btn = h("button", { class: "big", disabled: !canRecord, onclick: async () => {
+    if (rec && rec.state === "recording") return rec.stop();
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      status.textContent = "需要允许使用麦克风才能录音。请让爸爸妈妈在设置里打开。";
+      return;
+    }
+    chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onstop = async () => {
+      clearInterval(tick);
+      stream.getTracks().forEach((t) => t.stop());
+      btn.textContent = "🎤 再讲一遍";
+      btn.disabled = true;
+      status.textContent = "小猎犬正在认真听……";
+      const blob = new Blob(chunks, { type: rec.mimeType || "audio/mp4" });
+      try {
+        const res = await fetch(`/api/session/${R.session.id}/retell`, { method: "POST", body: blob, headers: { "content-type": blob.type }, credentials: "same-origin" });
+        const r = await res.json();
+        if (!res.ok) throw new Error(r.error || "出错了");
+        showRetell(r);
+      } catch (e) {
+        status.textContent = e.message === "Failed to fetch" ? "需要联网才能听你讲，连上网再试试。" : e.message;
+        btn.disabled = false;
+      }
+    };
+    rec.start();
+    t0 = Date.now();
+    btn.textContent = "⏹ 讲完了";
+    status.textContent = "正在听……讲完按“讲完了”。";
+    tick = setInterval(() => {
+      const sec = Math.floor((Date.now() - t0) / 1000);
+      timer.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+      if (sec >= 120) rec.stop(); // two minutes is plenty
+    }, 250);
+  } }, "🎤 开始讲");
+
+  function showRetell(r) {
+    if (r.tooShort) {
+      status.textContent = r.message;
+      btn.disabled = false;
+      return;
+    }
+    R.retell.triesLeft = r.triesLeft;
+    if (r.passed) confetti();
+    status.textContent = "";
+    out.replaceChildren(
+      h("div", { class: `feedback ${r.passed ? "ok" : "try"}` }, h("b", {}, r.passed ? "讲得真棒！🎉 " : "讲得不错！ "), r.feedback,
+        r.bones ? h("div", {}, `完成复述 +${r.bones} 🦴`) : null),
+      h("div", { class: "card", style: "margin-top:12px;box-shadow:none;border:1px solid var(--line)" },
+        h("b", {}, `你讲到了 ${r.covered.length} 件重要的事：`),
+        ...r.covered.map((p) => h("div", {}, "✓ ", p)),
+        r.missed.length ? h("div", { class: "muted", style: "margin-top:8px" }, "还可以讲讲：", r.missed.join("；")) : null,
+        r.tip ? h("div", { class: "muted" }, "💡 ", r.tip) : null),
+      h("details", { style: "margin-top:8px" }, h("summary", { class: "muted" }, "小猎犬听到的话"), h("p", {}, r.transcript)));
+    btn.disabled = !(r.triesLeft > 0) || r.passed;
+    if (r.passed || r.triesLeft <= 0) btn.hidden = true;
+  }
+
+  show(...header(R.article.title, 1),
+    h("div", { class: "card center", style: "padding:26px 20px" },
+      h("div", { html: pupSVG(state.home?.puppy.key, state.home?.accessories, "happy"), style: "width:110px;margin:0 auto" }),
+      h("h2", {}, "讲给小猎犬听"),
+      canRecord ? status : h("p", {}, "这台设备的浏览器不支持录音。"),
+      timer, btn, out,
+      h("div", { class: "row center", style: "margin-top:16px" }, h("button", { class: "ghost", onclick: leaveReading }, "回家"))));
 }
 
 async function reMeetChars(chars) {

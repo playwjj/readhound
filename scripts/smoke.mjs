@@ -117,8 +117,20 @@ ok(F.rewards.medals.some((m) => m.code === "medal:read1"), "first medal");
 const F2 = await call("child", "POST", `/api/session/${sid}/finish`);
 ok(F2.rewards === null && F2.alreadyCompleted, "finishing twice does not pay twice");
 
+console.log("voice retelling");
+const audio = new Uint8Array(4000).fill(7);
+async function retell() {
+  const r = await fetch(`${BASE}/api/session/${sid}/retell`, { method: "POST", body: audio, headers: { "content-type": "audio/mp4", cookie: jar.child } });
+  return { status: r.status, ...(await r.json()) };
+}
+const R1 = await retell();
+ok(R1.passed && R1.level === 3 && R1.bones === 3 && R1.covered.length === 3, `retell: ${R1.covered.length} points told → 完成复述, +${R1.bones} bones`);
+const R2 = await retell();
+ok(R2.bones === 0 && R2.triesLeft === 0, "second retell pays nothing more");
+ok((await retell()).status === 429, "a third retell is refused (live model calls are capped)");
+
 const h2 = await call("child", "GET", "/api/home");
-ok(h2.todayDone && h2.streak === 1 && h2.completed === 1, `home: streak ${h2.streak}, completed ${h2.completed}, bones ${h2.bones}`);
+ok(h2.todayDone && h2.streak === 1 && h2.completed === 1 && h2.bones === 13, `home: streak ${h2.streak}, completed ${h2.completed}, bones ${h2.bones}`);
 
 console.log("archive & report");
 const ch = S.newChars[0]?.char;
@@ -130,6 +142,7 @@ const col = await call("child", "GET", "/api/collection");
 ok(col.cards.length === S.newChars.length, `collection has ${col.cards.length} cards`);
 const rep = await call("parent", "GET", "/api/parent/report");
 ok(rep.history.length === 1 && rep.radar.some((r) => r.total > 0), "report has history + radar");
+ok(rep.history[0].level === 3 && rep.history[0].retell?.covered.length === 3, "report shows the retelling");
 ok(rep.history[0].wrong.length === 2 && !rep.history[0].wrong.some((w) => w.ability === "预测"), "report lists the wrong answers (a different prediction is not one)");
 ok(rep.radar.some((r) => r.ability === "locate" && r.total === 1), "回文定位 on the radar");
 const pp = await call("parent", "GET", "/api/parent/passport");

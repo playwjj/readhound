@@ -26,6 +26,9 @@ export async function report(env) {
     ? await all(env, `SELECT an.session_id, q.kind, q.prompt, q.options, q.answer, an.choice, an.attempt, q.ability FROM answers an JOIN questions q ON q.id = an.question_id
         WHERE an.session_id IN (${history.map(() => "?").join(",")}) AND an.correct = 0 AND q.kind <> 'predict' ORDER BY an.id`, ...history.map((h) => h.id))
     : [];
+  const retellRows = history.length
+    ? await all(env, `SELECT session_id, transcript, covered, total, feedback FROM retells WHERE session_id IN (${history.map(() => "?").join(",")}) ORDER BY id`, ...history.map((h) => h.id))
+    : [];
   const settings = await getSettings(env);
   const st = await streakInfo(env, today, settings);
   const due = await first(env, "SELECT COUNT(*) n FROM chars WHERE status IN ('seen','familiar') AND due_at <= ?", today);
@@ -47,6 +50,10 @@ export async function report(env) {
       taps: h.taps, tapped: h.tapped, accuracy: h.accuracy, charOk: h.char_ok, charTotal: h.char_total, bones: h.bones,
       title: h.title, articleId: h.article_id, chars: h.char_count, genre: GENRE_NAMES[h.genre] || h.genre,
       verdict: safeJSON(h.verdict, null),
+      retell: (() => {
+        const r = retellRows.filter((x) => x.session_id === h.id).pop();
+        return r ? { transcript: r.transcript, covered: safeJSON(r.covered, []), total: r.total, feedback: r.feedback } : null;
+      })(),
       wrong: wrongRows.filter((w) => w.session_id === h.id).map((w) => {
         const opts = safeJSON(w.options, []);
         // 回文定位 answers are sentence keys (paragraph*100 + sentence)

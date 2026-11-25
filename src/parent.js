@@ -47,6 +47,7 @@ export async function report(env) {
     newMastered,
     dueReview: due?.n || 0,
     targetNew: settings.target_new,
+    assessmentRequested: settings.assessment_requested === true,
     assessment: assessment ? { estimate: assessment.estimate, reached: levelReached(assessment.estimate), at: assessment.at, levels: safeJSON(assessment.detail, []) } : null,
     weekDone: week.filter((h) => h.level >= 2).length,
     history: history.map((h) => ({

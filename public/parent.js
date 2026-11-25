@@ -23,6 +23,24 @@ async function api(method, path, body) {
   if (!res.ok) throw new Error(data.error || `出错了（${res.status}）`);
   return data;
 }
+/** Baseline test status, with a one-tap re-test (the child starts it on the next open). */
+function assessmentLine(r) {
+  const line = h("div", { class: "row", style: "font-size:14px;margin:6px 0" });
+  const text = !r.assessment
+    ? "识字测评还没做完：孩子打开孩子端时会接着测（中途停下的进度存在平板上）。"
+    : r.assessmentRequested
+      ? `已安排重新测评，孩子下次打开时开始。上次估计：${r.assessment.estimate} 字（${r.assessment.at.slice(0, 10)}）`
+      : `测评估计：${r.assessment.estimate} 字，约到统编版${r.assessment.reached}（${r.assessment.at.slice(0, 10)}）`;
+  line.append(h("span", { class: "muted" }, text));
+  if (r.assessment && !r.assessmentRequested) {
+    line.append(h("span", { class: "spacer" }), h("button", { class: "small soft", onclick: async () => {
+      await api("POST", "/api/parent/assessment/request");
+      toast("孩子下次打开时会重新测评");
+      render();
+    } }, "重新测评"));
+  }
+  return line;
+}
 const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
 
 // ================================================================ shell
@@ -127,7 +145,7 @@ const VIEWS = {
         h("div", { class: "card" }, h("h2", {}, "能力雷达（近 60 天首答正确率）"), radarChart(r.radar),
           h("p", { class: "muted", style: "font-size:14px" }, r.radar.map((x) => `${x.name} ${x.correct}/${x.total}`).join(" · "))),
         h("div", { class: "card" }, h("h2", {}, "识字量曲线"), lineChart(r.curve),
-          r.assessment ? h("p", { class: "muted", style: "font-size:14px" }, `测评估计：${r.assessment.estimate} 字，约到统编版${r.assessment.reached}（${r.assessment.at.slice(0, 10)}）`) : null,
+          assessmentLine(r),
           h("h3", {}, `本月新驯服 ${r.newMastered.length} 个`),
           h("div", { class: "chars-inline" }, r.newMastered.map((c) => c.char).join("") || "—"))),
       aiUsageCard(u),

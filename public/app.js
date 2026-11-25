@@ -379,25 +379,44 @@ function mapStrip(m, completed) {
 }
 
 // ================================================================ assessment (§5 冷启动测评)
+// Progress of an unfinished baseline test stays on the device: "今天先到这儿"
+// is a pause, never an end. Only a finished test (all levels, or the stop
+// rule) is sent; a partial one would understate what the child knows.
+const ASSESS_KEY = "rh_assessment";
+function savedAssessment() {
+  const v = store.get(ASSESS_KEY);
+  // a pause older than two weeks no longer says much: start fresh
+  return v && v.at && Date.now() - v.at < 14 * 86400000 ? v : null;
+}
 function assessmentIntro() {
   homing = true; // before the baseline test this is the home page
+  const saved = savedAssessment();
+  const done = saved?.results?.length || 0;
   show(h("div", { class: "card center", style: "padding:30px 22px" },
     h("div", { html: pupSVG("pup"), style: "width:150px;margin:0 auto" }),
-    h("h2", {}, "小猎犬想先认识你！"),
-    h("p", {}, "我们来玩一个找拼音的游戏：每次出现一个字，点出它的读音。"),
-    h("p", { class: "muted" }, "不认识的字，就点“不认识”，一点也不丢人——这样小猎犬才知道给你准备什么故事。大约 10 分钟。"),
-    h("button", { class: "big", onclick: () => runAssessment() }, "开始游戏")));
+    h("h2", {}, done ? "接着上次的找拼音游戏吧！" : "小猎犬想先认识你！"),
+    done
+      ? h("p", {}, `上次做到第 ${saved.level + 1} 关，已经答了 ${done} 个字，从停下的地方接着来。`)
+      : h("p", {}, "我们来玩一个找拼音的游戏：每次出现一个字，点出它的读音。"),
+    h("p", { class: "muted" }, "不认识的字，就点“不认识”，一点也不丢人——这样小猎犬才知道给你准备什么故事。大约 10 分钟，可以分几次做完。"),
+    h("div", { class: "row center" },
+      h("button", { class: "big", onclick: () => runAssessment() }, done ? "接着测" : "开始游戏"),
+      done ? h("button", { class: "ghost small", onclick: () => { store.set(ASSESS_KEY, null); return runAssessment(); } }, "从头开始") : null)));
 }
 
 async function runAssessment() {
-  const seed = Math.floor(Math.random() * 100000);
-  const results = [];
+  const saved = savedAssessment();
+  const seed = saved?.seed || Math.floor(Math.random() * 100000);
+  const results = saved?.results || [];
   const STOP = {};
-  outer: for (let level = 0, levels = 1; level < levels; level++) {
+  const save = (level) => store.set(ASSESS_KEY, { seed, level, results, at: Date.now() });
+  for (let level = saved?.level || 0, levels = level + 1; level < levels; level++) {
     const L = await api("GET", `/api/assessment/level/${level}?seed=${seed}`);
     levels = L.levels;
-    let right = 0;
-    for (let i = 0; i < L.items.length; i++) {
+    const mine = results.filter((r) => r.level === level);
+    const byChar = new Map(L.items.map((it) => [it.char, it]));
+    let right = mine.filter((r) => r.choice != null && r.choice === byChar.get(r.char)?.options[byChar.get(r.char).a]).length;
+    for (let i = mine.length; i < L.items.length; i++) {
       const it = L.items[i];
       const choice = await new Promise((resolve) => {
         show(h("div", { class: "card warm-card" },
@@ -407,28 +426,33 @@ async function runAssessment() {
             ...it.options.map((o) => h("button", { onclick: () => resolve(o) }, o)),
             h("button", { class: "soft", style: "font-size:20px", onclick: () => resolve(null) }, "不认识")),
           h("div", { class: "row center", style: "margin-top:18px" },
-            h("button", { class: "ghost small", onclick: () => resolve(STOP) }, "今天先到这儿"))));
+            h("button", { class: "ghost small", onclick: () => resolve(STOP) }, "今天先到这儿，下次接着测"))));
       });
       if (choice === STOP) {
-        // nothing finished yet: back to the start, try again another time
-        if (level === 0) return assessmentIntro();
-        // keep the finished levels only; a half level would skew the estimate
-        const cut = results.findIndex((r) => r.level === level);
-        if (cut >= 0) results.splice(cut);
-        break outer;
+        save(level);
+        toast("记下了，下次打开从这里接着测", 2800);
+        return assessmentIntro();
       }
       results.push({ level, char: it.char, choice });
+      save(level);
       if (choice != null && choice === it.options[it.a]) right++;
     }
     // stop at the first level where fewer than half were right (§5: 测到连续错一档为止)
     if (right / L.items.length < 0.5) break;
     if (level < levels - 1) {
-      await new Promise((resolve) => show(h("div", { class: "card center", style: "padding:30px" },
+      save(level + 1);
+      const go = await new Promise((resolve) => show(h("div", { class: "card center", style: "padding:30px" },
         h("h2", {}, `第 ${level + 1} 关完成！`), h("p", {}, "下一关的字会难一点点。"),
-        h("div", { class: "row center" }, h("button", { onclick: resolve }, "继续"), h("button", { class: "ghost", onclick: () => { level = 99; resolve(); } }, "今天先到这儿")))));
+        h("div", { class: "row center" }, h("button", { onclick: () => resolve(true) }, "继续"),
+          h("button", { class: "ghost", onclick: () => resolve(false) }, "休息一下，下次接着测")))));
+      if (!go) {
+        toast("记下了，下次打开从第 " + (level + 2) + " 关接着测", 2800);
+        return assessmentIntro();
+      }
     }
   }
   const r = await api("POST", "/api/assessment/finish", { results });
+  store.set(ASSESS_KEY, null);
   show(h("div", { class: "card center", style: "padding:30px 22px" },
     h("div", { html: pupSVG("young", [], "happy"), style: "width:150px;margin:0 auto" }),
     h("h2", {}, "测完啦！"),

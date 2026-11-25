@@ -187,10 +187,10 @@ the known set grows — the daily pick never prefers a harder tier.
   corpus frequency (`scripts/build-charlevels.mjs`); breaks ties inside a
   volume and orders the common characters the textbooks never teach.
 
-## Deploy (dc2926 account)
+## Deploy
 
 ```sh
-npx wrangler login                       # as dc2926
+npx wrangler login
 npm run db:create                        # paste database_id into wrangler.toml
 npm run db:init
 npx wrangler r2 bucket create readhound-audio
@@ -205,8 +205,7 @@ Schema changes after the first deploy live in `db/migrations/`
 tests → `wrangler d1 migrations apply readhound --remote` (applies the ones
 not yet recorded) → `wrangler deploy`.
 
-Then attach the custom domain (e.g. read.404401.xyz) and add the page to
-the iPad home screen.
+Then attach a custom domain and add the page to the iPad home screen.
 
 ## License
 

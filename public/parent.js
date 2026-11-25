@@ -296,7 +296,7 @@ const VIEWS = {
         field("session_min", "单次阅读时长（分钟）", num(s.session_min, 5, 40), "到时进入休息页"),
         field("rest_min", "休息页锁定（分钟）", num(s.rest_min, 0, 10)),
         field("daily_limit_min", "每日看屏上限（分钟）", num(s.daily_limit_min, 0, 180), "超过后只能听读；0 = 不限"),
-        field("audio", "预生成朗读音频", sel(s.audio ? "1" : "0", [["1", "是（MeloTTS，存 R2）"], ["0", "否（用设备语音）"]])),
+        field("audio", "预生成朗读音频", sel(s.audio ? "1" : "0", [["1", "是（需配置 TTS_MODEL，存 R2）"], ["0", "否（用设备语音）"]]), "Workers AI 目前没有中文朗读模型，默认用 iPad 自带中文语音"),
         field("bedtime", "就寝时间", h("input", { type: "time", value: s.bedtime }), "之后只开放听读"),
         field("wake_time", "起床时间", h("input", { type: "time", value: s.wake_time }))),
       h("div", { class: "row end", style: "margin-top:16px" }, h("button", { onclick: save }, "保存设置")));

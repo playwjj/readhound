@@ -21,7 +21,9 @@ database_id = "61aebbb2-33df-4985-9dc2-48f053f67209"
 binding = "AUDIO"
 bucket_name = "readhound-audio"
 
-# Workers AI: suitability, glosses, questions (Qwen); MeloTTS read-aloud.
+# Workers AI: suitability, glosses, questions (Qwen). Read-aloud uses the
+# device voice; set TTS_MODEL to a Chinese-capable Workers AI TTS model to
+# pre-generate audio instead (MeloTTS was retired 2026-11-20).
 [ai]
 binding = "AI"
 

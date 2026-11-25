@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS = {
     { bones: 100, item: "周末活动由你挑" },
     { bones: 150, item: "指定明天读什么题材" },
   ],
-  audio: true, // pre-generate MeloTTS read-aloud
+  audio: true, // pre-generate read-aloud when a TTS_MODEL is configured (else device voice)
   freezes: 0,
   freeze_earned_at: 0,
   skill_days: 5, // completed readings between skill unlocks

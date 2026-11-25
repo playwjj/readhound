@@ -5,7 +5,10 @@
 import { paragraphs, isHan } from "./text.js";
 
 export const DEFAULT_MODEL = "@cf/qwen/qwen3.8-27b";
-export const TTS_MODEL = "@cf/myshell-ai/melotts";
+// Read-aloud: MeloTTS (the only Workers AI model with Chinese) was retired on
+// 2026-11-20; the remaining Aura models are English/Spanish. Server-side audio
+// is therefore opt-in via the TTS_MODEL var; the device's Chinese voice reads
+// otherwise (offline-capable on iPad).
 
 export const GENRES = ["fable", "fairy", "myth", "story", "science", "history", "poem", "life", "idiom"];
 export const GENRE_NAMES = {
@@ -171,7 +174,9 @@ export function validateGlosses(arr, body, chars) {
     if (!word.includes(g.char) || !body.includes(word) || [...word].length > 6) word = g.char;
     const gloss = String(g.gloss || "").trim().slice(0, 30);
     if (!gloss) continue;
-    out.push({ char: g.char, word, gloss, example: String(g.example || "").trim().slice(0, 30) });
+    const example = String(g.example || "").trim().slice(0, 30);
+    // an example sentence that does not contain the character teaches nothing
+    out.push({ char: g.char, word, gloss, example: example.includes(g.char) ? example : null });
     want.delete(g.char);
   }
   if (out.length < Math.ceil(chars.length * 0.6)) throw new Error(`only ${out.length}/${chars.length} glosses valid`);
@@ -282,10 +287,10 @@ function mockQuestions(body, guessChars) {
 }
 
 // ------------------------------------------------------------------ TTS
-/** MeloTTS → mp3 bytes. Returns null when unavailable (client uses device voice). */
+/** TTS_MODEL → mp3 bytes. Returns null when not configured (client uses the device voice). */
 export async function tts(env, text) {
-  if (env.AI_MOCK === "1" || !env.AI) return null;
-  const res = await env.AI.run(TTS_MODEL, { prompt: text, lang: "zh" });
+  if (env.AI_MOCK === "1" || !env.AI || !env.TTS_MODEL) return null;
+  const res = await env.AI.run(env.TTS_MODEL, { prompt: text, lang: "zh" });
   const b64 = res && (res.audio || res.result?.audio);
   if (!b64) return null;
   const bin = atob(b64);

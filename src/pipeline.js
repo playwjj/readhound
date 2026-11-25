@@ -3,7 +3,7 @@
 //   metrics → screen → pinyin → encounters → glosses → questions → audio → ready
 import { all, first, run, stmt, batch, getSettings, knownSet } from "./db.js";
 import { normalise, paragraphs, articleMetrics, hardScreen, rankOf, CORE_RANK, MAX_RANK, VOLUME_END, newCharsFor } from "./lib/text.js";
-import { annotate, readingAt } from "./lib/pinyin.js";
+import { annotate, readingAt, readingOf } from "./lib/pinyin.js";
 import { screenArticle, glossChars, makeQuestions, tts } from "./lib/ai.js";
 
 export const STAGES = ["metrics", "screen", "pinyin", "encounters", "glosses", "questions", "audio"];
@@ -134,7 +134,7 @@ const STAGE_FN = {
 
   async audio(env, a) {
     const s = await getSettings(env);
-    if (!s.audio || !env.AUDIO) return;
+    if (!s.audio || !env.AUDIO || !env.TTS_MODEL) return;
     const paras = paragraphs(a.body);
     const keys = a.audio ? JSON.parse(a.audio) : paras.map(() => null);
     let did = 0;
@@ -175,7 +175,9 @@ export async function ensureGlosses(env, a, chars) {
     const g = byChar.get(ch) || { char: ch, word: ch, gloss: null, example: null };
     const at = a.body.indexOf(g.word);
     const idx = at >= 0 ? at + [...g.word].indexOf(ch) : a.body.indexOf(ch);
-    const py = readingAt(a.body.slice(Math.max(0, idx - 20), idx + 20), Math.min(idx, 20));
+    let py = readingAt(a.body.slice(Math.max(0, idx - 20), idx + 20), Math.min(idx, 20));
+    // a neutral-tone reading in context (认识 → shi) is not what a card teaches: use the citation tone
+    if (!/[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]/.test(py)) py = readingOf(ch) || py;
     return stmt(env, "INSERT OR REPLACE INTO glosses (article_id, char, pinyin, word, gloss, example) VALUES (?, ?, ?, ?, ?, ?)",
       a.id, ch, py, g.word, g.gloss, g.example);
   });

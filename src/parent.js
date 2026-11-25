@@ -1,7 +1,7 @@
 // Parent-facing API: report, library review, ingestion, settings,
 // textbook lists, monthly passport, reward redemption.
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet, DEFAULT_SETTINGS } from "./db.js";
-import { enqueue, step, nextPending, requeue, reapplyFix } from "./pipeline.js";
+import { enqueue, step, nextPending, requeue, reapplyFix, enqueueGenerated, aiPausedUntil, PAUSED } from "./pipeline.js";
 import { paragraphs, isHan, newCharsFor, newTier } from "./lib/text.js";
 import { cnDate, addDays, levelReached } from "./lib/logic.js";
 import { ABILITY_NAMES, GENRE_NAMES, GENRES } from "./lib/ai.js";
@@ -87,7 +87,7 @@ export async function listArticles(env, status) {
   const rows = await all(env, `SELECT id, title, status, stage, genre, char_count, difficulty, coverage, avg_sentence_len, age_fit, ai_note, reject_reason, last_error, created_at
     FROM articles WHERE ${where} ORDER BY id DESC LIMIT 300`, ...(status && ok.includes(status) ? [status] : []));
   const counts = await all(env, "SELECT status, COUNT(*) n FROM articles GROUP BY status");
-  return { articles: rows.map((r) => ({ ...r, genreName: GENRE_NAMES[r.genre] || r.genre })), counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) };
+  return { articles: rows.map((r) => ({ ...r, genreName: GENRE_NAMES[r.genre] || r.genre })), counts: Object.fromEntries(counts.map((c) => [c.status, c.n])), aiPausedUntil: await aiPausedUntil(env) };
 }
 
 export async function articleDetail(env, id) {
@@ -99,11 +99,12 @@ export async function articleDetail(env, id) {
   const { teachable, all: allNew } = newCharsFor(a.uniq || "", known);
   const reads = await all(env, "SELECT id, date, level, accuracy, active_ms FROM sessions WHERE article_id = ? ORDER BY id DESC", id);
   return {
-    ...a, uniq: undefined, pinyin: undefined,
+    ...a, uniq: undefined, pinyin: undefined, gen_spec: undefined,
     paragraphs: paragraphs(a.body),
     genreName: GENRE_NAMES[a.genre] || a.genre,
     tags: safeJSON(a.tags, []),
     purpose: safeJSON(a.purpose, null),
+    genSpec: safeJSON(a.gen_spec, null),
     questions: qs.map((q) => ({ ...q, options: safeJSON(q.options, []), meta: safeJSON(q.meta, null), abilityName: ABILITY_NAMES[q.ability] })),
     glosses: gl,
     newForChild: teachable,
@@ -221,10 +222,16 @@ export async function articleAction(env, id, action) {
   return { ok: true };
 }
 
+/** §11: a story written for this child (optionally starring them). */
+export async function generate(env, { hero, genre, theme, focus }) {
+  const okFocus = ["extract", "infer", "summarise", "theme", "word", "locate"];
+  return enqueueGenerated(env, { hero: !!hero, genre, theme: String(theme || "").trim(), focus: okFocus.includes(focus) ? focus : null });
+}
+
 export async function pipelineStep(env) {
   const line = await step(env);
   const pending = await first(env, "SELECT COUNT(*) n FROM articles WHERE status IN ('queued','processing')");
-  return { log: line, pending: pending.n };
+  return { log: line, pending: pending.n, paused: !!line && line.startsWith(PAUSED) };
 }
 
 // ---------------------------------------------------------------- pinyin fixes
@@ -250,7 +257,7 @@ export async function removePinyinFix(env, { word }) {
 }
 
 // ---------------------------------------------------------------- settings
-const EDITABLE = ["pinyin", "font_size", "session_min", "rest_min", "daily_limit_min", "bedtime", "wake_time", "interests", "rewards", "audio", "skill_days", "child_name", "target_new", "params"];
+const EDITABLE = ["protagonist", "auto_generate", "pinyin", "font_size", "session_min", "rest_min", "daily_limit_min", "bedtime", "wake_time", "interests", "rewards", "audio", "skill_days", "child_name", "target_new", "params"];
 
 export async function getParentSettings(env) {
   const s = await getSettings(env);
@@ -276,6 +283,8 @@ export async function putSettings(env, body) {
       case "child_name": if (typeof v !== "string" || !v.trim() || v.length > 12) bad(); break;
       case "target_new": if (!(v >= 2 && v <= 10)) bad(); break;
       case "params": if (typeof v !== "object") bad(); break;
+      case "protagonist": if (!v || typeof v !== "object" || ["name", "traits", "friends"].some((k) => typeof (v[k] ?? "") !== "string" || (v[k] || "").length > 60)) bad(); break;
+      case "auto_generate": if (typeof v !== "boolean") bad(); break;
     }
     await setSetting(env, k, k === "params" ? { ...DEFAULT_SETTINGS.params, ...v } : v);
   }

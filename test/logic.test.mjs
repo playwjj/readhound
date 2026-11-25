@@ -8,6 +8,8 @@ import {
 } from "../src/lib/logic.js";
 import { extractJSON, validateQuestions, validateGlosses, validateScreen, validatePolyphones, validateSkills, validateRetell } from "../src/lib/ai.js";
 import { splitBulk, wikiHtmlToText, suggest } from "../src/parent.js";
+import { checkStory } from "../src/pipeline.js";
+import { parseStory, isQuotaError } from "../src/lib/ai.js";
 import { readFileSync } from "node:fs";
 
 const sample = readFileSync(new URL("../samples/xiaolieqi-zhaozi.txt", import.meta.url), "utf8").split("\n").slice(1).join("\n");
@@ -349,4 +351,24 @@ test("validateRetell matches covered points by text, never by index", () => {
   const r = validateRetell({ covered: ["阿嗅猜出森字", "每天来读书", "1", "编出来的要点"], feedback: "讲得好", tip: "" }, pts);
   assert.deepEqual(r.covered, ["阿嗅猜出森字", "阿嗅每天来读书"]);
   assert.equal(validateRetell({ covered: [] }, pts).covered.length, 0);
+});
+
+test("checkStory counts characters beyond the known set and the targets", () => {
+  const known = new Set([..."我们去公园玩了很开心小狗跑"]);
+  const c = checkStory({ body: "我们去公园玩了，小狗跑得很开心。乐乐踢球。".repeat(40) }, known, new Set([..."乐"]));
+  assert.deepEqual(c.extra.sort(), ["球", "踢", "得"].sort());
+  assert.equal(c.ok, true); // 3 extra, length in range
+  assert.equal(checkStory({ body: "我们去公园。" }, known, new Set()).ok, false); // too short
+});
+
+test("parseStory: first line title, markdown and 《》 stripped", () => {
+  const st = parseStory("## 《乐乐找小狗》\n\n**第一段。**\n第二段。\n第三段。\n第四段。");
+  assert.equal(st.title, "乐乐找小狗");
+  assert.equal(st.body.split("\n")[0], "第一段。");
+});
+
+test("isQuotaError recognises the Workers AI daily allocation error", () => {
+  assert.ok(isQuotaError(new Error("4006: you have used up your daily free allocation of 10,000 neurons")));
+  assert.ok(!isQuotaError(new Error("5028: model deprecated")));
+  assert.ok(!isQuotaError(new Error("q1: bad prompt")));
 });

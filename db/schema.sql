@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS articles (
   polyphones_fixed  INTEGER,             -- readings the model corrected after pinyin-pro
   audio             TEXT,                -- JSON array: R2 key per paragraph (null = use device voice)
   purpose           TEXT,                -- 带着问题读: the pre-reading observation task
+  gen_spec          TEXT,                -- JSON: AI-generated story spec + generation report (null = real material)
   status            TEXT NOT NULL DEFAULT 'queued', -- queued | processing | flagged | ready | rejected | retired
   stage             TEXT NOT NULL DEFAULT 'metrics', -- next pipeline stage
   attempts          INTEGER NOT NULL DEFAULT 0,

@@ -152,4 +152,21 @@ console.log("extra reading");
 const E = await call("child", "POST", "/api/session/start", { extra: true });
 ok(E.article.id !== S.article.id && !E.session.daily, `extra: ${E.article.title}`);
 
+console.log("generated stories");
+await call("parent", "PUT", "/api/parent/settings", { protagonist: { name: "乐乐", traits: "爱踢球", friends: "" } });
+const G = await call("parent", "POST", "/api/parent/generate", { hero: true, theme: "帮小狗找家" });
+ok(G.spec.hero.name === "乐乐" && G.spec.targets.length > 0, `story queued, targets ${G.spec.targets.join("")}`);
+for (let i = 0; i < 60; i++) { const r = await call("parent", "POST", "/api/parent/pipeline/step"); if (!r.pending) break; }
+const GA = await call("parent", "GET", `/api/parent/articles/${G.id}`);
+ok(GA.status === "ready" && GA.body.includes("乐乐") && GA.genSpec.rounds.length >= 1, `「${GA.title}」 ready, ${GA.char_count} chars, rounds: ${GA.genSpec.rounds.map((r) => r.extra).join("→")} extra chars`);
+ok(GA.genSpec.rounds[GA.genSpec.rounds.length - 1].extra <= GA.genSpec.rounds[0].extra, "rewrites never leave more unknown characters");
+
+// cron: fewer than 2 suitable unread articles → one story is written (once a day)
+const before = (await call("parent", "GET", "/api/parent/articles")).articles.length;
+await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=*/30+*+*+*+*`);
+await fetch(`${BASE}/cdn-cgi/handler/scheduled?cron=*/30+*+*+*+*`);
+const after = (await call("parent", "GET", "/api/parent/articles")).articles;
+const autos = after.filter((a) => a.id > G.id);
+ok(after.length === before + 1 && autos.length === 1, `cron queued exactly one 补位 story (#${autos[0]?.id} ${autos[0]?.status})`);
+
 console.log("\nALL GOOD");

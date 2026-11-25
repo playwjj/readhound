@@ -171,6 +171,8 @@ const VIEWS = {
     const filter = h("div", { class: "row" }, ...[["", "全部"], ...Object.entries(STATUS)].map(([k, label]) =>
       h("button", { class: "small " + (k === status ? "" : "ghost"), onclick: () => { history.replaceState(null, "", `?status=${k}#library`); render(); } }, `${label}${k && d.counts[k] ? ` ${d.counts[k]}` : ""}`)));
     return h("div", {},
+      d.aiPausedUntil ? h("div", { class: "card", style: "background:var(--accent-soft)" },
+        `⏸ Workers AI 今天的免费额度已用完，入库暂停，${new Date(d.aiPausedUntil).toLocaleString("zh-CN", { hour12: false })} 自动继续。排队的文章不会被判失败。`) : null,
       h("div", { class: "card" }, h("div", { class: "row" }, filter, h("span", { class: "spacer" }), pending ? runBtn : null),
         h("p", { class: "muted", style: "font-size:14px" }, "入库流程：硬指标（覆盖率、句长、字数）→ AI 适龄评估 → 拼音 → 生字卡 → 出题 → 朗读音频。定时任务每 30 分钟自动处理一次。")),
       h("div", { class: "card" }, d.articles.length ? h("table", {},
@@ -212,7 +214,25 @@ const VIEWS = {
         toast(r.duplicate ? "已存在" : `已加入队列 #${r.id}`);
       } catch (e) { toast(e.message); }
     };
+    const gHero = h("select", {}, h("option", { value: "1" }, "孩子自己当主角"), h("option", { value: "0" }, "不指定主角"));
+    const gGenre = h("select", {}, ...["story", "fairy", "fable", "science", "life", "myth"].map((k) => h("option", { value: k }, GENRES[k])));
+    const gTheme = h("input", { placeholder: "主题，可留空，如：去海边捡贝壳、第一次养蚕" });
+    const gFocus = h("select", {}, h("option", { value: "" }, "侧重能力：按最近的弱项自动选"),
+      ...[["extract", "信息提取"], ["infer", "推断"], ["summarise", "概括"], ["theme", "道理体会"], ["word", "词语理解"], ["locate", "回文定位"]].map(([k, v]) => h("option", { value: k }, v)));
+    const genBtn = h("button", { onclick: async () => {
+      try {
+        genBtn.disabled = true;
+        const r = await api("POST", "/api/parent/generate", { hero: gHero.value === "1", genre: gGenre.value, theme: gTheme.value, focus: gFocus.value || null });
+        toast(`已开始写 #${r.id}，目标字：${r.spec.targets.join("") || "无"}`, 3500);
+        await runPipeline(genBtn);
+      } catch (e) { toast(e.message); genBtn.disabled = false; }
+    } }, "写一篇");
     return h("div", {},
+      h("div", { class: "card" }, h("h2", {}, "AI 定制故事"),
+        h("p", { class: "muted" }, "按孩子当前的识字量写一篇：复习到期的生字、引入下一批该学的字，超纲的字会让 AI 改写掉。写完照常走适龄审核和出题。主角设定在“设置”里。"),
+        h("div", { class: "grid2" }, h("div", {}, h("label", {}, "主角"), gHero), h("div", {}, h("label", {}, "题材"), gGenre)),
+        h("label", {}, "主题"), gTheme, h("div", { style: "margin-top:8px" }, gFocus),
+        h("div", { class: "row end", style: "margin-top:10px" }, genBtn)),
       h("div", { class: "card" }, h("h2", {}, "录入一篇"), h("div", { class: "grid2" }, h("div", {}, h("label", {}, "标题"), title), h("div", {}, h("label", {}, "题材"), genre)),
         h("label", {}, "来源"), source, h("label", {}, "正文"), body, h("div", { class: "row end", style: "margin-top:10px" }, h("button", { onclick: addOne }, "加入书库"))),
       h("div", { class: "card" }, h("h2", {}, "批量导入（txt）"),
@@ -283,6 +303,8 @@ const VIEWS = {
           target_new: Number(f.target_new.value),
           skill_days: Number(f.skill_days.value),
           audio: f.audio.value === "1",
+          protagonist: { name: f.hero_name.value.trim(), traits: f.hero_traits.value.trim(), friends: f.hero_friends.value.trim() },
+          auto_generate: f.auto_generate.value === "1",
         });
         toast("已保存");
       } catch (e) { toast(e.message); }
@@ -299,6 +321,10 @@ const VIEWS = {
         field("rest_min", "休息页锁定（分钟）", num(s.rest_min, 0, 10)),
         field("daily_limit_min", "每日看屏上限（分钟）", num(s.daily_limit_min, 0, 180), "超过后只能听读；0 = 不限"),
         field("audio", "预生成朗读音频", sel(s.audio ? "1" : "0", [["1", "是（需配置 TTS_MODEL，存 R2）"], ["0", "否（用设备语音）"]]), "Workers AI 目前没有中文朗读模型，默认用 iPad 自带中文语音"),
+        field("hero_name", "定制故事主角名", h("input", { value: s.protagonist?.name || "", placeholder: `留空 = ${s.child_name}` })),
+        field("hero_traits", "主角性格与爱好", h("input", { value: s.protagonist?.traits || "", placeholder: "如：爱踢球，有点马虎，喜欢恐龙" })),
+        field("hero_friends", "主角的好朋友", h("input", { value: s.protagonist?.friends || "", placeholder: "如：同桌乐乐、小狗豆豆" })),
+        field("auto_generate", "书库不够时自动写故事", sel(s.auto_generate ? "1" : "0", [["1", "是（每天最多一篇）"], ["0", "否"]]), "合适的未读文章少于 2 篇时，AI 按孩子的字表补一篇"),
         field("bedtime", "就寝时间", h("input", { type: "time", value: s.bedtime }), "之后只开放听读"),
         field("wake_time", "起床时间", h("input", { type: "time", value: s.wake_time }))),
       h("div", { class: "row end", style: "margin-top:16px" }, h("button", { onclick: save }, "保存设置")),
@@ -372,6 +398,11 @@ async function articleView(id) {
       h("h2", {}, a.title, " ", h("span", { class: `pill ${a.status}` }, STATUS[a.status])),
       h("p", { class: "muted" }, [a.genreName, `${a.char_count} 字`, `难度 ${a.difficulty ?? "—"}`, `覆盖率 ${pct(a.coverage)}`, `平均句长 ${a.avg_sentence_len ?? "—"}`, `最长句 ${a.max_sentence_len ?? "—"}`].filter(Boolean).join(" · ")),
       a.ai_note ? h("p", {}, "AI 点评：", a.ai_note, a.tags.length ? `（${a.tags.join("、")}）` : "") : null,
+      a.genSpec ? h("div", { class: "surprise", style: "font-size:15px" },
+        h("b", {}, a.genSpec.auto ? "🤖 书库补位，AI 生成" : "✍️ AI 定制故事"),
+        a.genSpec.hero ? `（主角：${a.genSpec.hero.name}）` : "",
+        h("div", {}, `目标字：${(a.genSpec.targets || []).join("") || "—"}；实际用上：${(a.genSpec.targetsUsed || []).join("") || "—"}`),
+        a.genSpec.rounds ? h("div", {}, "生成与改写：", a.genSpec.rounds.map((r, i) => `${i ? `第 ${i} 次改写` : "初稿"} ${r.len} 字、超纲 ${r.extra} 个${r.hard ? `（${r.hard}）` : ""}`).join(" → ")) : null) : null,
       a.reject_reason ? h("p", { style: "color:var(--accent)" }, a.reject_reason) : null,
       a.last_error ? h("p", { class: "muted" }, "最近错误：", a.last_error) : null,
       buttons),
@@ -438,6 +469,7 @@ async function runPipeline(btn) {
     for (let i = 0; i < 200; i++) {
       const r = await api("POST", "/api/parent/pipeline/step");
       btn.textContent = `处理中…（剩 ${r.pending}）${r.log ? " " + r.log : ""}`;
+      if (r.paused) { toast("AI 今日额度已用完，入库暂停，额度重置后自动继续", 4000); break; }
       if (!r.pending) break;
     }
   } catch (e) { toast(e.message); }

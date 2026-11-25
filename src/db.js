@@ -31,6 +31,9 @@ export const DEFAULT_SETTINGS = {
   freeze_earned_at: 0,
   skill_days: 5, // completed readings between skill unlocks
   child_name: "小读者",
+  // §16-4: the hero of personalised stories (二期主角定制短篇)
+  protagonist: { name: "", traits: "", friends: "" }, // name "" = child_name
+  auto_generate: true, // write a story when the library has nothing suitable (max 1/day)
   pinyin_fixes: [], // [{word: "长着", pinyin: "zhǎng zhe"}] — parent corrections, win over everything
 };
 

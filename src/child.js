@@ -4,14 +4,14 @@ import { all, first, run, stmt, batch, getSettings, setSetting, knownSet } from 
 import { paragraphs, countHan, rankOf, newCharsFor, textbookInfo, splitSentences } from "./lib/text.js";
 import { readingOf, pinyinChoices } from "./lib/pinyin.js";
 import { pinyin as pinyinPro } from "pinyin-pro";
-import { ensureGlosses } from "./pipeline.js";
+import { ensureGlosses, enqueueGenerated } from "./pipeline.js";
 import {
   cnDate, addDays, rankCandidates, adaptTarget, verdict, srsUpdate, sampleLevel, scoreAssessment,
   ASSESS_LEVELS, ASSESS_PER_LEVEL, LEVEL_NAMES, BONES, puppyStage, mapPosition, medalsFor, streakFrom, MAX_FREEZES,
   eyeCare, skillsFor, MAX_ATTEMPTS, RETELL_PASS, RETELL_MAX,
 } from "./lib/logic.js";
 import { openChest } from "./data/surprises.js";
-import { GENRE_NAMES, ABILITY_NAMES, transcribe, assessRetell } from "./lib/ai.js";
+import { GENRE_NAMES, ABILITY_NAMES, transcribe, assessRetell, isQuotaError } from "./lib/ai.js";
 
 const MAX_NEW_CARDS = 8;
 /** The new characters a session teaches: the most useful (most frequent) first. */
@@ -92,6 +92,27 @@ export async function ensurePick(env, today, ctx) {
   if (ctx) ctx.waitUntil(job);
   else await job;
   return { article_id: best.id, reason: best.reason, title: best.title, genre: best.genre, char_count: best.charCount };
+}
+
+/**
+ * §11 补位: when fewer than two unread articles suit this child (PASS or
+ * REVIEW tier), write one. At most one a day; never before the baseline test.
+ */
+export async function maybeAutoGenerate(env) {
+  const s = await getSettings(env);
+  const today = cnDate();
+  if (!s.auto_generate || s.last_auto_generate === today) return null;
+  if (!(await first(env, "SELECT id FROM assessments LIMIT 1"))) return null;
+  if (await first(env, "SELECT id FROM articles WHERE status IN ('queued','processing') AND stage = 'generate' LIMIT 1")) return null;
+  const exclude = await readArticleIds(env);
+  const pick = await first(env, "SELECT article_id FROM daily_pick WHERE date = ?", today);
+  if (pick) exclude.add(pick.article_id);
+  const ranked = rankCandidates(await candidatePool(env, exclude), await pickContext(env, today, s));
+  const suitable = ranked.filter((c) => c.tier !== "later").length;
+  if (suitable >= 2) return null;
+  await setSetting(env, "last_auto_generate", today);
+  const interests = s.interests || [];
+  return enqueueGenerated(env, { auto: true, theme: interests.length ? interests[new Date().getDate() % interests.length] : "" });
 }
 
 // ================================================================ home
@@ -472,12 +493,25 @@ export async function retell(env, id, request) {
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (bytes.length < 2000) throw new HttpError(400, "录音太短了，再讲一遍吧");
   if (bytes.length > 6 * 1024 * 1024) throw new HttpError(413, "录音太长了，讲两分钟以内就好");
-  const transcript = await transcribe(env, bytes);
+  const tired = () => new HttpError(503, "小猎犬今天听了太多故事，有点累了，明天再讲给它听吧");
+  let transcript;
+  try {
+    transcript = await transcribe(env, bytes);
+  } catch (e) {
+    if (isQuotaError(e)) throw tired();
+    throw e;
+  }
   if (countHan(transcript) < 8) return { tooShort: true, transcript, message: "小猎犬没听清楚，靠近一点、大声一点再讲一遍？" };
 
   const a = await first(env, "SELECT title FROM articles WHERE id = ?", s.article_id);
   const points = JSON.parse(q.options);
-  const r = await assessRetell(env, { title: a.title, points, transcript });
+  let r;
+  try {
+    r = await assessRetell(env, { title: a.title, points, transcript });
+  } catch (e) {
+    if (isQuotaError(e)) throw tired();
+    throw e;
+  }
   await run(env, "INSERT INTO retells (session_id, transcript, covered, total, feedback, tip) VALUES (?, ?, ?, ?, ?, ?)",
     id, transcript, JSON.stringify(r.covered), points.length, r.feedback, r.tip);
 

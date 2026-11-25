@@ -20,6 +20,11 @@ export const ABILITY_NAMES = {
   extract: "信息提取", word: "词语理解", infer: "推断", summarise: "概括", theme: "道理体会", locate: "回文定位", predict: "预测", retell: "复述",
 };
 
+/** Workers AI daily allocation used up (error 4006): waiting, not a content problem. */
+export function isQuotaError(e) {
+  return /\b4006\b|daily free allocation|neurons/i.test(String(e?.message || e));
+}
+
 // ------------------------------------------------------------------ chat
 export async function chat(env, prompt, { maxTokens = 1500, temperature = 0.4, retries = 1 } = {}) {
   const model = env.AI_MODEL || DEFAULT_MODEL;
@@ -44,6 +49,7 @@ export async function chat(env, prompt, { maxTokens = 1500, temperature = 0.4, r
       if (!text) throw new Error(`empty response from ${model}`);
       return text;
     } catch (e) {
+      if (isQuotaError(e)) throw e; // retrying only burns time
       lastErr = e;
       console.warn(`[ai] ${model} attempt ${attempt + 1} failed:`, e && (e.stack || e.message || String(e)));
     }
@@ -114,6 +120,7 @@ async function generate(env, prompt, validate, opts) {
       const out = extractJSON(await chat(env, p, opts));
       return validate(out);
     } catch (e) {
+      if (isQuotaError(e)) throw e;
       lastErr = e;
       p = `${prompt}\n\n上一次输出不合格：${e.message}。请严格按要求的 JSON 格式重新输出。`;
     }
@@ -391,6 +398,78 @@ function mockSkills(body, narrative) {
   return validateSkills(o, body, narrative);
 }
 
+// ------------------------------------------------------------------ generated stories (§11)
+const FOCUS_HINT = {
+  extract: "故事里写清楚具体的时间、地点、数量和先后顺序",
+  infer: "情节里留一些线索，让读者能推断出人物的想法或原因，但不要直接说破",
+  summarise: "结构清楚，分成开头、经过、结尾几个部分，每部分有一个中心",
+  theme: "故事最后自然地让人体会到一个道理，不要说教",
+  word: "用上几个可以联系上下文猜出意思的词语",
+  locate: "关键的原因或证据要明确写在某一句话里",
+};
+
+export function storyPrompt(spec) {
+  const hero = spec.hero
+    ? `主人公就是读这篇故事的孩子：名字叫${spec.hero.name}${spec.hero.traits ? `，${spec.hero.traits}` : ""}${spec.hero.friends ? `；好朋友：${spec.hero.friends}` : ""}。`
+    : "主人公自拟（适合十岁孩子喜欢的角色）。";
+  return `请写一篇给四年级孩子（识字量偏少）读的${GENRE_NAMES[spec.genre] || "故事"}。
+${hero}
+${spec.theme ? `主题：${spec.theme}。` : ""}
+要求：
+- 正文 600–800 字，分 6–10 段；句子短一些，多用对话和动作；
+- 用字尽量简单，以小学一、二年级学过的常用字为主，不用生僻字和成语堆砌；
+- 必须自然地用上这些字，每个至少出现两次：${spec.targets.join("、") || "（无）"}；
+- ${FOCUS_HINT[spec.focus] || "情节有起伏，有趣味"}；
+- 内容积极健康，没有暴力和恐怖情节。
+输出格式：第一行是标题（10 字以内），从第二行起是正文，每段一行。不要输出任何其他说明。`;
+}
+
+export function rewritePrompt(title, body, hardChars, len) {
+  return `下面这篇给四年级孩子的故事里，有些字孩子还不认识：${hardChars.join("、")}。
+请改写这些地方，换成更简单的说法（意思不变），其余内容尽量保留。${len < 600 ? "正文太短，请补充到 600–800 字。" : len > 900 ? "正文太长，请删减到 600–800 字。" : "正文保持 600–800 字。"}
+输出格式同原文：第一行标题，从第二行起是正文，每段一行，不要其他说明。
+
+${title}
+${body}`;
+}
+
+/** First line = title; the rest = body (paragraphs, normalised). */
+export function parseStory(text) {
+  const lines = normalise(String(text).replace(/^#+\s*/gm, "").replace(/\*\*/g, "")).split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 4) throw new Error("story too short");
+  const title = lines[0].replace(/^《|》$|^标题[:：]\s*/g, "").slice(0, 20);
+  return { title, body: lines.slice(1).join("\n") };
+}
+
+export async function writeStory(env, spec) {
+  if (env.AI_MOCK === "1") return mockStory(spec);
+  return parseStory(await chat(env, storyPrompt(spec), { maxTokens: 2200, temperature: 0.8 }));
+}
+
+export async function rewriteStory(env, story, hardChars, len) {
+  if (env.AI_MOCK === "1") {
+    // mock: drop the offending characters
+    const strip = (t) => [...t].filter((c) => !hardChars.includes(c)).join("");
+    return { title: story.title, body: strip(story.body) };
+  }
+  return parseStory(await chat(env, rewritePrompt(story.title, story.body, hardChars, len), { maxTokens: 2200, temperature: 0.4 }));
+}
+
+function mockStory(spec) {
+  const name = spec.hero?.name || "小明";
+  const t = spec.targets.join("") || "书";
+  const paras = [
+    `${name}今天起得很早，他想去公园看一看。天上有白白的云，地上有绿绿的草。`,
+    `走到半路，${name}看见一只小狗在路边叫。小狗的家在哪里呢？${name}想帮它找到家。`,
+    `他问了卖花的阿姨，又问了开车的叔叔。大家都说，小狗是从学校那边跑来的。（模拟生字：${t}${t}）`,
+    `${name}带着小狗走到学校门口。门口的老爷爷笑着说：“这是我家的小狗，谢谢你！”`,
+    `老爷爷请${name}喝了一杯水，还给他讲了一个有趣的故事。${name}听得很开心。`,
+    `回家的路上，${name}想：帮助别人，自己也会很快乐。他决定明天再去看看小狗。`,
+    `晚上，${name}把今天的事讲给妈妈听。妈妈说：“你做了一件好事，真棒！”`,
+  ];
+  return { title: `${name}和小狗`, body: [...paras, ...paras.map((p) => p.replace(/今天|明天/g, "这天"))].join("\n") };
+}
+
 // ------------------------------------------------------------------ retelling (live, once or twice a day)
 /** Speech → simplified text. Whisper writes traditional characters; normalise. */
 export async function transcribe(env, bytes) {
@@ -408,6 +487,7 @@ export async function transcribe(env, bytes) {
       const r = await env.AI.run(model, input);
       return normalise(String(r?.text || "")).replace(/\n/g, "");
     } catch (e) {
+      if (isQuotaError(e)) throw e;
       lastErr = e;
       console.warn(`[stt] ${model} failed:`, e?.message || e);
     }

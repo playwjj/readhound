@@ -117,7 +117,17 @@ practice). The pre-reading task comes in one object with its question.
   bones. The only live model call on the reading path: two per session.
   `@cf/openai/whisper` (handles iPad AAC); `STT_MODEL` overrides.
 
-Still to do from phase 2: AI-generated supplementary stories.
+- **AI 定制故事** (§11) — on demand (optionally starring the child; hero
+  set in settings) or automatically when fewer than two unread articles
+  suit the child (cron, max one a day). Each story targets due-review
+  characters plus the next ones in textbook order; code counts the
+  characters the child does not know and asks for simpler wording (≤2
+  rewrites, best draft kept); then the normal pipeline screens it.
+
+**Workers AI budget.** The free plan gives 10,000 neurons a day per
+account. When it runs out (error 4006) the pipeline pauses until 00:00
+UTC instead of failing articles; the parent console shows a banner and
+retelling tells the child to try tomorrow.
 
 ## Development
 

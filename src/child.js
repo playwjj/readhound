@@ -31,6 +31,16 @@ export class HttpError extends Error {
 }
 
 // ================================================================ summaries
+/**
+ * Wait for background AI work only briefly: a child's tap must not hang on a
+ * model call. The work goes on (waitUntil) and its result is there next time.
+ */
+async function soon(ctx, job, ms = 3000) {
+  if (!ctx) return job;
+  ctx.waitUntil(job);
+  if (ms > 0) await Promise.race([job, new Promise((r) => setTimeout(r, ms))]);
+}
+
 async function completedCount(env) {
   return (await first(env, "SELECT COUNT(*) n FROM sessions WHERE level >= 2")).n;
 }
@@ -63,11 +73,16 @@ async function candidatePool(env, excludeIds) {
 }
 
 async function pickContext(env, today, settings) {
-  const known = await knownSet(env);
-  const due = new Set((await all(env, "SELECT char FROM chars WHERE status IN ('seen','familiar') AND due_at <= ?", today)).map((r) => r.char));
-  const upcoming = new Set((await all(env, "SELECT char FROM textbook_chars")).map((r) => r.char));
-  const recent = await all(env, "SELECT a.genre FROM daily_pick p JOIN articles a ON a.id = p.article_id WHERE p.date < ? ORDER BY p.date DESC LIMIT 3", today);
-  return { known, due, upcoming, recentGenres: recent.map((r) => r.genre), interests: settings.interests || [], targetNew: settings.target_new, unit: await currentUnit(env) };
+  const [known, dueRows, upRows, recent, unit] = await Promise.all([
+    knownSet(env),
+    all(env, "SELECT char FROM chars WHERE status IN ('seen','familiar') AND due_at <= ?", today),
+    all(env, "SELECT char FROM textbook_chars"),
+    all(env, "SELECT a.genre FROM daily_pick p JOIN articles a ON a.id = p.article_id WHERE p.date < ? ORDER BY p.date DESC LIMIT 3", today),
+    currentUnit(env),
+  ]);
+  const due = new Set(dueRows.map((r) => r.char));
+  const upcoming = new Set(upRows.map((r) => r.char));
+  return { known, due, upcoming, recentGenres: recent.map((r) => r.genre), interests: settings.interests || [], targetNew: settings.target_new, unit };
 }
 
 async function readArticleIds(env) {
@@ -75,12 +90,14 @@ async function readArticleIds(env) {
 }
 
 /** Today's pick, choosing it now if the cron has not. */
-export async function ensurePick(env, today, ctx) {
+export async function ensurePick(env, today, ctx, waitMs = 0) {
   const have = await first(env, "SELECT p.article_id, p.reason, a.title, a.genre, a.char_count, a.status FROM daily_pick p JOIN articles a ON a.id = p.article_id WHERE p.date = ?", today);
   if (have && have.status === "ready") return have;
-  const settings = await getSettings(env);
-  const exclude = await readArticleIds(env);
-  const recentPicks = await all(env, "SELECT article_id FROM daily_pick WHERE date >= ? AND date < ?", addDays(today, -30), today);
+  const [settings, exclude, recentPicks] = await Promise.all([
+    getSettings(env),
+    readArticleIds(env),
+    all(env, "SELECT article_id FROM daily_pick WHERE date >= ? AND date < ?", addDays(today, -30), today),
+  ]);
   recentPicks.forEach((r) => exclude.add(r.article_id));
   let pool = await candidatePool(env, exclude);
   if (!pool.length) pool = await candidatePool(env, await readArticleIds(env)); // allow recently skipped picks again
@@ -91,8 +108,7 @@ export async function ensurePick(env, today, ctx) {
   await run(env, "INSERT INTO daily_pick (date, article_id, reason) VALUES (?, ?, ?) ON CONFLICT(date) DO UPDATE SET article_id = excluded.article_id, reason = excluded.reason", today, best.id, reason);
   // backfill glosses for this child's new characters (AI; off the reading path when possible)
   const job = ensureGlosses(env, { id: best.id, title: best.title, body: (await first(env, "SELECT body FROM articles WHERE id = ?", best.id)).body }, teachList(best.newChars)).catch((e) => console.warn("[pick] gloss backfill failed", e?.message));
-  if (ctx) ctx.waitUntil(job);
-  else await job;
+  await soon(ctx, job, waitMs);
   return { article_id: best.id, reason: best.reason, title: best.title, genre: best.genre, char_count: best.charCount };
 }
 
@@ -122,20 +138,26 @@ export async function maybeAutoGenerate(env) {
 // ================================================================ home
 export async function home(env, ctx) {
   const today = cnDate();
-  const settings = await getSettings(env);
-  const assessed = await first(env, "SELECT id, estimate, at FROM assessments ORDER BY id DESC LIMIT 1");
+  const [settings, assessed] = await Promise.all([
+    getSettings(env),
+    first(env, "SELECT id, estimate, at FROM assessments ORDER BY id DESC LIMIT 1"),
+  ]);
   const needAssessment = !assessed || settings.assessment_requested === true;
   // no pick before the baseline test: "new" is only meaningful against a known set
   const pick = needAssessment ? null : await ensurePick(env, today, ctx);
-  const daySession = pick ? await first(env, "SELECT id, level, last_paragraph FROM sessions WHERE date = ? AND daily = 1 AND article_id = ? ORDER BY id DESC LIMIT 1", today, pick.article_id) : null;
-  const { streak, freezes, todayDone } = await streakInfo(env, today, settings);
-  const completed = await completedCount(env);
-  const counts = await first(env, `SELECT
+  // independent reads in parallel: each D1 query is a network round trip
+  const [daySession, { streak, freezes, todayDone }, completed, counts, day, accessories, bones] = await Promise.all([
+    pick ? first(env, "SELECT id, level, last_paragraph FROM sessions WHERE date = ? AND daily = 1 AND article_id = ? ORDER BY id DESC LIMIT 1", today, pick.article_id) : null,
+    streakInfo(env, today, settings),
+    completedCount(env),
+    first(env, `SELECT
       SUM(CASE WHEN status IN ('familiar','mastered') THEN 1 ELSE 0 END) known,
       SUM(CASE WHEN status = 'mastered' AND origin IN ('reading','textbook') THEN 1 ELSE 0 END) tamed
-    FROM chars`);
-  const day = await first(env, "SELECT screen_ms, extra_bonus FROM days WHERE date = ?", today);
-  const accessories = await all(env, "SELECT code, title FROM awards WHERE kind = 'accessory' ORDER BY at");
+    FROM chars`),
+    first(env, "SELECT screen_ms, extra_bonus FROM days WHERE date = ?", today),
+    all(env, "SELECT code, title FROM awards WHERE kind = 'accessory' ORDER BY at"),
+    bonesBalance(env),
+  ]);
   return {
     today,
     childName: settings.child_name,
@@ -145,7 +167,7 @@ export async function home(env, ctx) {
     todayDone,
     streak,
     freezes,
-    bones: await bonesBalance(env),
+    bones,
     completed,
     knownChars: counts?.known || 0,
     tamedChars: counts?.tamed || 0,
@@ -164,29 +186,34 @@ export async function startSession(env, ctx, { extra = false } = {}) {
   const settings = await getSettings(env);
   let articleId, daily = 1;
   if (extra) {
-    const exclude = await readArticleIds(env);
-    const pickRow = await first(env, "SELECT article_id FROM daily_pick WHERE date = ?", today);
+    const [exclude, pickRow, open] = await Promise.all([
+      readArticleIds(env),
+      first(env, "SELECT article_id FROM daily_pick WHERE date = ?", today),
+      // an unfinished extra reading from today is resumed
+      first(env, "SELECT article_id FROM sessions WHERE date = ? AND daily = 0 AND level < 2 ORDER BY id DESC LIMIT 1", today),
+    ]);
     if (pickRow) exclude.add(pickRow.article_id);
-    // an unfinished extra reading from today is resumed
-    const open = await first(env, "SELECT article_id FROM sessions WHERE date = ? AND daily = 0 AND level < 2 ORDER BY id DESC LIMIT 1", today);
     if (open) articleId = open.article_id;
     else {
       const pool = await candidatePool(env, exclude);
       if (!pool.length) throw new HttpError(404, "书库里暂时没有新文章了");
       const best = rankCandidates(pool, await pickContext(env, today, settings))[0];
       articleId = best.id;
-      await ensureGlosses(env, { id: best.id, title: best.title, body: (await first(env, "SELECT body FROM articles WHERE id = ?", best.id)).body }, teachList(best.newChars)).catch(() => {});
+      const body = (await first(env, "SELECT body FROM articles WHERE id = ?", best.id)).body;
+      await soon(ctx, ensureGlosses(env, { id: best.id, title: best.title, body }, teachList(best.newChars)).catch(() => {}));
     }
     daily = 0;
   } else {
-    const pick = await ensurePick(env, today, null);
+    const pick = await ensurePick(env, today, ctx, 3000);
     if (!pick) throw new HttpError(404, "今天的故事还在准备中");
     articleId = pick.article_id;
   }
 
-  const a = await first(env, "SELECT * FROM articles WHERE id = ?", articleId);
-  let s = await first(env, "SELECT * FROM sessions WHERE date = ? AND article_id = ? AND daily = ? ORDER BY id DESC LIMIT 1", today, articleId, daily);
-  const completed = await completedCount(env);
+  let [a, s, completed] = await Promise.all([
+    first(env, "SELECT * FROM articles WHERE id = ?", articleId),
+    first(env, "SELECT * FROM sessions WHERE date = ? AND article_id = ? AND daily = ? ORDER BY id DESC LIMIT 1", today, articleId, daily),
+    completedCount(env),
+  ]);
   const skills = skillsFor(completed, settings.skill_days);
   const has = (k) => skills.some((x) => x.key === k && x.unlocked);
 
@@ -203,13 +230,17 @@ export async function startSession(env, ctx, { extra = false } = {}) {
   const paras = paragraphs(a.body);
   const py = safeJSON(a.pinyin, []);
   const audio = safeJSON(a.audio, []);
-  const glossRows = await all(env, "SELECT char, pinyin, word, gloss, example FROM glosses WHERE article_id = ?", a.id);
+  const [glossRows, qs, answered, quizDone, day, retellRow] = await Promise.all([
+    all(env, "SELECT char, pinyin, word, gloss, example FROM glosses WHERE article_id = ?", a.id),
+    all(env, "SELECT id, ord, kind, ability, prompt, options, evidence, word, meta FROM questions WHERE article_id = ? ORDER BY ord", a.id),
+    all(env, "SELECT question_id, correct, attempt, choice FROM answers WHERE session_id = ?", s.id),
+    all(env, "SELECT char, correct, retry_ok FROM char_quiz WHERE session_id = ?", s.id),
+    first(env, "SELECT screen_ms FROM days WHERE date = ?", today),
+    first(env, "SELECT COUNT(*) n FROM retells WHERE session_id = ?", s.id),
+  ]);
   const gl = new Map(glossRows.map((g) => [g.char, g]));
   const unglossed = plan.filter((p) => !gl.get(p.char)?.gloss).map((p) => p.char);
   if (unglossed.length && ctx) ctx.waitUntil(ensureGlosses(env, a, unglossed).catch((e) => console.warn("[session] gloss backfill failed", e?.message)));
-  const qs = await all(env, "SELECT id, ord, kind, ability, prompt, options, evidence, word, meta FROM questions WHERE article_id = ? ORDER BY ord", a.id);
-  const answered = await all(env, "SELECT question_id, correct, attempt, choice FROM answers WHERE session_id = ?", s.id);
-  const quizDone = await all(env, "SELECT char, correct, retry_ok FROM char_quiz WHERE session_id = ?", s.id);
   const purpose = has("purpose") ? safeJSON(a.purpose, null) : null;
   const choiceQs = qs.filter((q) => q.kind === "choice");
   const guess = has("guess") ? qs.find((q) => q.kind === "guess") : null;
@@ -217,8 +248,7 @@ export async function startSession(env, ctx, { extra = false } = {}) {
   const locates = has("locate") ? qs.filter((q) => q.kind === "locate") : [];
   const sections = has("summarise") ? qs.filter((q) => q.kind === "section") : [];
   const retellQ = has("retell") ? qs.find((q) => q.kind === "retell") : null;
-  const retells = retellQ ? (await first(env, "SELECT COUNT(*) n FROM retells WHERE session_id = ?", s.id)).n : 0;
-  const day = await first(env, "SELECT screen_ms FROM days WHERE date = ?", today);
+  const retells = retellQ ? retellRow?.n || 0 : 0;
 
   const card = (p) => {
     const g = gl.get(p.char) || {};

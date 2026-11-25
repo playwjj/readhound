@@ -313,3 +313,28 @@ ruby.hz rt { display: block; font-size: 0.48em; line-height: 1.2; color: var(--i
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ------------------------------------------------------------ feedback (ui.js)
+   every tap answers at once: press-down look, busy spinner, activity bar */
+button:active, .btn:active { transform: scale(0.96); filter: brightness(0.95); }
+button.busy { cursor: progress; }
+body.net button.busy::after {
+  content: ""; width: 0.8em; height: 0.8em; flex: none;
+  border: 2.5px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: rh-spin 0.7s linear infinite;
+}
+@keyframes rh-spin { to { transform: rotate(360deg); } }
+.netbar {
+  position: fixed; left: 0; right: 0; top: 0; height: 3px; z-index: 1000;
+  pointer-events: none; opacity: 0; transition: opacity 0.2s;
+  background: linear-gradient(90deg, transparent 0, var(--accent) 40%, var(--accent) 60%, transparent 100%) 0 0 / 40% 100% no-repeat;
+}
+.netbar.on { opacity: 1; animation: rh-bar 1.1s ease-in-out infinite; }
+@keyframes rh-bar { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+.tab-body.stale { opacity: 0.55; transition: opacity 0.15s 0.1s; pointer-events: none; }
+/* new pages fade in softly instead of popping */
+#app > * { animation: rh-in 0.18s ease-out; }
+@keyframes rh-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  #app > *, .netbar.on, body.net button.busy::after { animation: none; }
+}

@@ -1,25 +1,29 @@
 // 字游记 — child app. One page, views rendered into #app.
 // Flow per article: 生字预热 → 读前任务 → 分段阅读 → 闯关题 → 生字小测 → 结算
 import { pupSVG } from "./pup.js";
+import { h, toast, net } from "./ui.js";
 
 const $app = document.getElementById("app");
 const state = { home: null, me: null };
 
 // ================================================================ helpers
-function h(tag, attrs = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v == null || v === false) continue;
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "html") el.innerHTML = v;
-    else if (k === "class") el.className = v;
-    else if (k === "style") el.style.cssText = v;
-    else el.setAttribute(k, v === true ? "" : v);
-  }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
-  return el;
-}
+let viewSeq = 0; // bumps on every page change, so a late refresh never overwrites a newer page
+// Back gesture / back key: any page other than home pushes one history entry,
+// and going back from it returns home (leaving the reading, saved, if open).
+let atHome = true;
+let homing = false; // set by the home and login pages just before they render
+addEventListener("popstate", () => {
+  atHome = true;
+  if (document.querySelector(".rest")) return; // the rest page cannot be skipped
+  if (R) leaveReading();
+  else if (state.home) goHome();
+});
 function show(...nodes) {
+  viewSeq++;
+  // a page change closes any open popup (it belongs to the page being left)
+  document.querySelectorAll("body > .modal").forEach((m) => m.remove());
+  if (homing) { atHome = true; homing = false; }
+  else if (atHome) { history.pushState({ rh: 1 }, ""); atHome = false; }
   $app.classList.remove("wide");
   $app.replaceChildren(...nodes.flat().filter((n) => n != null && n !== false));
   window.scrollTo(0, 0);
@@ -28,11 +32,6 @@ function show(...nodes) {
 function showWide(...nodes) {
   show(...nodes);
   $app.classList.add("wide");
-}
-function toast(msg, ms = 2200) {
-  const t = h("div", { class: "toast" }, msg);
-  document.body.append(t);
-  setTimeout(() => t.remove(), ms);
 }
 class Offline extends Error {
   constructor() {
@@ -43,7 +42,7 @@ class Offline extends Error {
 async function api(method, path, body) {
   let res;
   try {
-    res = await fetch(path, {
+    res = await net(path, {
       method,
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
@@ -53,7 +52,7 @@ async function api(method, path, body) {
     throw new Offline();
   }
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401) {
+  if (res.status === 401 && path !== "/api/login") {
     loginView();
     throw new Error("login");
   }
@@ -234,6 +233,7 @@ function restPage() {
 
 // ================================================================ login
 function loginView() {
+  homing = true;
   let pin = "";
   const dots = h("div", { class: "pin-dots" });
   const err = h("div", { class: "err" });
@@ -264,12 +264,34 @@ function loginView() {
 }
 
 // ================================================================ home
-async function boot() {
+/**
+ * Home. On app start, the last home of today is drawn at once from the device
+ * and refreshed when the server answers (only if the child is still on it).
+ */
+async function boot(first = false) {
+  const cachedHome = first ? store.get("rh_home") : null;
+  return loadHome(cachedHome);
+}
+/** Back to the home menu at once (from 图鉴/地图/技能), refreshed in the background. */
+function goHome() {
+  return loadHome(state.home);
+}
+async function loadHome(cachedHome) {
+  let seq = -1;
+  if (cachedHome && cachedHome.today === today() && !cachedHome.needAssessment) {
+    state.home = cachedHome;
+    clock.sessionMin = cachedHome.eye.sessionMin;
+    clock.restMin = cachedHome.eye.restMin;
+    homeView();
+    seq = viewSeq;
+  }
   try {
     state.home = await api("GET", "/api/home");
+    store.set("rh_home", state.home);
     sendPending();
   } catch (e) {
     if (e.message === "login") return;
+    if (seq >= 0) return; // the saved home is already on screen and still usable
     const cached = e.offline && cachedSession(false);
     show(h("div", { class: "card center" },
       h("p", {}, e.offline ? "现在没有网络。" : "网络不太顺，检查一下再打开。"),
@@ -281,6 +303,7 @@ async function boot() {
   }
   clock.sessionMin = state.home.eye.sessionMin;
   clock.restMin = state.home.eye.restMin;
+  if (seq >= 0 && seq !== viewSeq) return; // the child has already moved on
   if (state.home.needAssessment) return assessmentIntro();
   homeView();
 }
@@ -294,6 +317,7 @@ function greeting(H) {
 }
 
 function homeView() {
+  homing = true;
   const H = state.home;
   const todayCard = h("div", { class: "card today" });
   if (!H.article) {
@@ -356,6 +380,7 @@ function mapStrip(m, completed) {
 
 // ================================================================ assessment (§5 冷启动测评)
 function assessmentIntro() {
+  homing = true; // before the baseline test this is the home page
   show(h("div", { class: "card center", style: "padding:30px 22px" },
     h("div", { html: pupSVG("pup"), style: "width:150px;margin:0 auto" }),
     h("h2", {}, "小猎犬想先认识你！"),
@@ -367,7 +392,8 @@ function assessmentIntro() {
 async function runAssessment() {
   const seed = Math.floor(Math.random() * 100000);
   const results = [];
-  for (let level = 0, levels = 1; level < levels; level++) {
+  const STOP = {};
+  outer: for (let level = 0, levels = 1; level < levels; level++) {
     const L = await api("GET", `/api/assessment/level/${level}?seed=${seed}`);
     levels = L.levels;
     let right = 0;
@@ -379,8 +405,18 @@ async function runAssessment() {
           h("div", { class: "big" }, it.char),
           h("div", { class: "opts py", style: "margin-top:14px" },
             ...it.options.map((o) => h("button", { onclick: () => resolve(o) }, o)),
-            h("button", { class: "soft", style: "font-size:20px", onclick: () => resolve(null) }, "不认识"))));
+            h("button", { class: "soft", style: "font-size:20px", onclick: () => resolve(null) }, "不认识")),
+          h("div", { class: "row center", style: "margin-top:18px" },
+            h("button", { class: "ghost small", onclick: () => resolve(STOP) }, "今天先到这儿"))));
       });
+      if (choice === STOP) {
+        // nothing finished yet: back to the start, try again another time
+        if (level === 0) return assessmentIntro();
+        // keep the finished levels only; a half level would skew the estimate
+        const cut = results.findIndex((r) => r.level === level);
+        if (cut >= 0) results.splice(cut);
+        break outer;
+      }
       results.push({ level, char: it.char, choice });
       if (choice != null && choice === it.options[it.a]) right++;
     }
@@ -494,7 +530,7 @@ function leaveReading() {
   if (R?.stopFlush) R.stopFlush();
   clock.onTick = null;
   R = null;
-  boot();
+  return boot();
 }
 
 function header(title, pct) {
@@ -523,7 +559,7 @@ function warmupView() {
         c.gloss ? h("div", { class: "gloss" }, c.gloss) : null,
         c.example ? h("div", { class: "gloss" }, `例：${c.example}`) : null,
         h("div", { class: "row center", style: "margin-top:14px" },
-          h("button", { class: "soft", onclick: () => speak(c.word || c.char) }, "🔊 听一听"))),
+          h("button", { class: "soft", onclick: () => void speak(c.word || c.char) }, "🔊 听一听"))),
       h("div", { class: "dots" }, ...cards.map((_, k) => h("i", { class: k === i ? "on" : "" }))),
       h("div", { class: "row center" },
         i > 0 ? h("button", { class: "ghost", onclick: () => { i--; draw(); } }, "上一个") : null,
@@ -548,7 +584,7 @@ async function matchGame() {
       show(...header(R.article.title, 0.05),
         h("div", { class: "card center" },
           h("div", { class: "muted" }, `听音找字 ${r + 1}/${order.length}`),
-          h("button", { class: "big soft", style: "margin:14px 0", onclick: say }, "🔊 再听一遍"),
+          h("button", { class: "big soft", style: "margin:14px 0", onclick: () => void say() }, "🔊 再听一遍"),
           h("div", { class: "opts py" }, ...opts.map((o) => h("button", {
             style: "font-size:48px;font-family:'Kaiti SC','STKaiti',serif",
             onclick: (e) => {
@@ -628,7 +664,7 @@ function charPopover(ch, py, node) {
         g?.word && g.word !== ch ? h("div", {}, g.word) : null,
         g?.gloss ? h("div", { class: "muted" }, g.gloss) : null),
       h("div", { class: "spacer" }),
-      h("button", { class: "icon soft", onclick: () => speak(g?.word || ch) }, "🔊")),
+      h("button", { class: "icon soft", onclick: () => void speak(g?.word || ch) }, "🔊")),
     h("div", { class: "row end", style: "margin-top:8px" },
       h("button", { class: "ghost small", onclick: () => { popEl.remove(); popEl = null; charModal(ch); } }, "我在哪儿见过它？"),
       h("button", { class: "small", onclick: () => { popEl.remove(); popEl = null; } }, "知道了")));
@@ -677,7 +713,8 @@ function readView() {
         modal.remove();
         toast("记住你的猜测，往下读揭晓！", 2600);
         drawActions();
-      } }, o)))));
+      } }, o))),
+      h("div", { class: "row center", style: "margin-top:12px" }, h("button", { class: "ghost small", onclick: () => modal.remove() }, "先不猜，接着读"))));
     document.body.append(modal);
   };
 
@@ -702,7 +739,7 @@ function readView() {
 
   const drawActions = () => {
     actions.replaceChildren();
-    actions.append(h("button", { class: "soft", onclick: () => playParagraph(paras[R.idx]) }, "🔊 读这一段"));
+    actions.append(h("button", { class: "soft", onclick: () => void playParagraph(paras[R.idx]) }, "🔊 读这一段"));
     if (R.readAloud) actions.append(h("button", { class: "soft", onclick: () => { stopAudio(); readAloudCard(R.idx); } }, "🎙 我来读"));
     if (predictHere()) {
       actions.append(h("button", { onclick: () => predictCard() }, "🔮 猜猜后面会怎样"));
@@ -765,7 +802,8 @@ function readView() {
     const modal = h("div", { class: "modal" }, h("div", { class: "sheet" },
       h("div", { class: "task" }, h("div", { class: "lbl" }, "技能 · 猜词义"), g.prompt),
       h("p", { class: "muted" }, "先别急着查，联系前后的句子猜一猜。"),
-      opts, fb));
+      opts, fb,
+      h("div", { class: "row center", style: "margin-top:12px" }, h("button", { class: "ghost small", onclick: () => modal.remove() }, "先不猜，接着读"))));
     document.body.append(modal);
   };
 
@@ -815,7 +853,7 @@ function lookBack(i, onBack) {
     h("h3", {}, `第 ${i + 1} 段`),
     rubyPara(p, i),
     h("div", { class: "row center" },
-      h("button", { class: "soft", onclick: () => playParagraph(p) }, "🔊 读给我听"),
+      h("button", { class: "soft", onclick: () => void playParagraph(p) }, "🔊 读给我听"),
       h("button", { onclick: () => { stopAudio(); modal.remove(); onBack && onBack(); } }, "找到了，回去答题"))));
   modal.querySelector(".para").classList.add("current");
   document.body.append(modal);
@@ -996,7 +1034,7 @@ function askQuestion(q, n, total, retryRound) {
         opts, fb,
         h("div", { class: "row", style: "margin-top:14px" },
           h("button", { class: "ghost small", onclick: wholeText }, "📄 看原文"),
-          h("button", { class: "ghost small", onclick: () => speak(q.prompt + "。" + q.options.map((o, i) => `${"ABCD"[i]}，${o}`).join("。")) }, "🔊 读题"),
+          h("button", { class: "ghost small", onclick: () => void speak(q.prompt + "。" + q.options.map((o, i) => `${"ABCD"[i]}，${o}`).join("。")) }, "🔊 读题"),
           h("span", { class: "spacer" }), nextBtn)));
   });
 }
@@ -1177,7 +1215,7 @@ function readAloudCard(i) {
     btn.textContent = "🎙 再读一遍";
     status.textContent = "小猎犬正在认真听……";
     try {
-      const res = await fetch(`/api/session/${R.session.id}/fluency?para=${i}&ms=${ms}`, { method: "POST", body: blob, headers: { "content-type": blob.type }, credentials: "same-origin" });
+      const res = await net(`/api/session/${R.session.id}/fluency?para=${i}&ms=${ms}`, { method: "POST", body: blob, headers: { "content-type": blob.type }, credentials: "same-origin" });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "出错了");
       if (d.tooShort) { status.textContent = d.message; btn.disabled = false; return; }
@@ -1206,7 +1244,7 @@ function readAloudCard(i) {
         h("b", {}, pct >= 95 ? "读得又准又顺！🎉 " : pct >= 80 ? "读得不错！🐾 " : "读完啦！有几个地方再读读。 "),
         `读准了 ${pct}%，每分钟 ${d.cpm} 字。`),
       d.practise.length ? h("div", { style: "margin-top:10px" }, h("span", { class: "muted" }, "这几个地方再读读（点一下听）："),
-        ...d.practise.map((w) => h("button", { class: "small soft", style: "margin:4px", onclick: () => speak(w) }, `🔊 ${w}`))) : null);
+        ...d.practise.map((w) => h("button", { class: "small soft", style: "margin:4px", onclick: () => void speak(w) }, `🔊 ${w}`))) : null);
   }
   const modal = h("div", { class: "modal" }, h("div", { class: "sheet" },
     h("div", { class: "task" }, h("div", { class: "lbl" }, "技能 · 大声朗读"), `第 ${i + 1} 段`),
@@ -1248,7 +1286,7 @@ function retellView() {
       status.textContent = "小猎犬正在认真听……";
       const blob = new Blob(chunks, { type: rec.mimeType || "audio/mp4" });
       try {
-        const res = await fetch(`/api/session/${R.session.id}/retell`, { method: "POST", body: blob, headers: { "content-type": blob.type }, credentials: "same-origin" });
+        const res = await net(`/api/session/${R.session.id}/retell`, { method: "POST", body: blob, headers: { "content-type": blob.type }, credentials: "same-origin" });
         const r = await res.json();
         if (!res.ok) throw new Error(r.error || "出错了");
         showRetell(r);
@@ -1310,7 +1348,7 @@ async function reMeetChars(chars) {
           c?.word && c.word !== ch ? h("div", { class: "word" }, c.word) : null,
           c?.gloss ? h("div", { class: "gloss" }, c.gloss) : null,
           h("div", { class: "row center", style: "margin-top:12px" },
-            h("button", { class: "soft", onclick: () => speak(c?.word || ch) }, "🔊"), h("button", { onclick: resolve }, "记住了"))));
+            h("button", { class: "soft", onclick: () => void speak(c?.word || ch) }, "🔊"), h("button", { onclick: resolve }, "记住了"))));
       speak(ch);
     });
   }
@@ -1331,7 +1369,7 @@ async function charModal(ch) {
         c.status !== "mastered" && c.status !== "unseen" ? h("div", { class: "muted", style: "font-size:15px" }, `在 ${c.correctArticles} 篇文章里答对过（3 篇就驯服啦）`) : null,
         c.textbook?.recognise ? h("div", { class: "muted", style: "font-size:15px" }, `课本：${c.textbook.recognise}认识${c.textbook.write ? `，${c.textbook.write}会写` : ""}`) : null),
       h("span", { class: "spacer" }),
-      h("button", { class: "icon soft", onclick: () => speak(c.word || c.char) }, "🔊")),
+      h("button", { class: "icon soft", onclick: () => void speak(c.word || c.char) }, "🔊")),
     h("h3", {}, `🐾 在这些故事里见过（${c.seenIn.length}）`),
     c.seenIn.length ? h("div", {}, ...c.seenIn.map((s) => h("div", { class: "list-item", onclick: () => { modal.remove(); rereadView(s.articleId, c.char); } },
       h("div", { style: "flex:1" }, h("b", {}, s.title), h("div", { class: "snippet", html: escapeHTML(s.snippet).replaceAll(c.char, `<mark>${c.char}</mark>`) })),
@@ -1359,7 +1397,7 @@ async function rereadView(id, focusChar) {
 async function collectionView() {
   const c = await api("GET", "/api/collection");
   const count = (s) => c.cards.filter((x) => x.status === s).length;
-  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "生字图鉴")),
+  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: goHome }, "← 回家"), h("div", { class: "t" }, "生字图鉴")),
     h("div", { class: "legend" },
       h("span", {}, `🏅 已驯服 ${count("mastered")}`), h("span", {}, `💙 认识 ${count("familiar")}`), h("span", {}, `👀 见过 ${count("seen")}`)),
     c.medals.length ? h("div", { class: "card" }, h("b", {}, "我的勋章 "), ...c.medals.map((m) => h("span", { class: "medal" }, "🏅 ", m.title))) : null,
@@ -1373,7 +1411,7 @@ async function collectionView() {
 function mapView() {
   const H = state.home;
   const regions = ["拼音草原", "汉字森林", "成语山谷", "神话之河", "故事城堡", "科学港湾", "诗词云岛", "智慧高塔"];
-  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "闯关地图")),
+  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: goHome }, "← 回家"), h("div", { class: "t" }, "闯关地图")),
     h("div", { class: "duo" }, ...regions.map((name, r) => {
       const lit = Math.max(0, Math.min(H.map.perRegion, H.completed - r * H.map.perRegion));
       const strip = h("div", { class: "map-strip" });
@@ -1388,7 +1426,7 @@ function mapView() {
 
 function skillsView() {
   const icons = { extract: "🔎", purpose: "🎯", guess: "🤔", predict: "🔮", locate: "📍", summarise: "🧩", retell: "🎤" };
-  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "技能法宝")),
+  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: goHome }, "← 回家"), h("div", { class: "t" }, "技能法宝")),
     h("div", { class: "duo" }, ...state.home.skills.map((s) => h("div", { class: "card skill" + (s.unlocked ? "" : " locked") },
       h("div", { class: "badge" }, icons[s.key] || "⭐"),
       h("div", {}, h("b", {}, s.name), h("div", { class: "muted" }, s.desc),
@@ -1397,12 +1435,5 @@ function skillsView() {
 
 // ================================================================ start
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-(async () => {
-  try {
-    const me = await (await fetch("/api/me", { credentials: "same-origin" })).json();
-    if (!me.role) return loginView();
-  } catch {
-    // offline: the service worker may still serve the shell; try the app anyway
-  }
-  boot();
-})();
+// no separate /api/me round trip: /api/home answers 401 when not signed in
+boot(true);

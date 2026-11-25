@@ -1,37 +1,20 @@
 // 字游记 — parent console.
+import { h, toast, net } from "./ui.js";
 const $app = document.getElementById("app");
 const GENRES = { fable: "寓言", fairy: "童话", myth: "神话传说", story: "故事", science: "科普", history: "历史", poem: "诗歌", life: "生活", idiom: "成语故事" };
 const STATUS = { queued: "排队中", processing: "处理中", flagged: "待复核", ready: "已就绪", rejected: "未通过", retired: "已下架" };
 const LEVEL = ["已打开", "读完正文", "完成今日阅读", "完成复述"];
 
-function h(tag, attrs = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v == null || v === false) continue;
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "html") el.innerHTML = v;
-    else if (k === "class") el.className = v;
-    else if (k === "style") el.style.cssText = v;
-    else el.setAttribute(k, v === true ? "" : v);
-  }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
-  return el;
-}
 const svg = (tag, attrs = {}, ...kids) => {
   const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
   for (const kid of kids.flat()) if (kid != null) el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
   return el;
 };
-function toast(msg, ms = 2400) {
-  const t = h("div", { class: "toast" }, msg);
-  document.body.append(t);
-  setTimeout(() => t.remove(), ms);
-}
 async function api(method, path, body) {
   const headers = { "x-rh-area": "parent" };
   if (body) headers["content-type"] = "application/json";
-  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+  const res = await net(path, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 || res.status === 403) {
     loginView();
@@ -51,20 +34,28 @@ function frame(content) {
     h("div", { class: "topbar" }, h("h1", {}, "字游记 · 家长"), h("div", { class: "spacer" }),
       h("a", { class: "btn ghost", href: "/", style: "font-size:15px;min-height:40px" }, "孩子端"),
       h("button", { class: "ghost small", onclick: async () => { await api("POST", "/api/logout", { role: "parent" }); loginView(); } }, "退出")),
-    h("div", { class: "tabs" }, ...TABS.map(([k, label]) => h("button", { class: k === tab ? "on" : "", onclick: () => go(k) }, label))),
-    content);
+    h("div", { class: "tabs" }, ...TABS.map(([k, label]) => h("button", { class: k === tab ? "on" : "", onclick: () => { go(k); } }, label))),
+    h("div", { class: "tab-body" }, content));
 }
 function go(k) {
-  tab = k;
-  location.hash = k;
-  render();
+  if (location.hash.slice(1) === k) return render();
+  location.hash = k; // the hashchange listener renders
 }
+// The tab lights up at once; the old content stays (dimmed) until the new
+// one arrives, so the page does not jump. A newer tab click wins.
+let renderSeq = 0;
 async function render() {
-  frame(h("p", { class: "muted" }, "加载中……"));
+  const seq = ++renderSeq;
+  const old = $app.querySelector(".tab-body");
+  if (old) {
+    $app.querySelectorAll(".tabs button").forEach((b, i) => b.classList.toggle("on", TABS[i][0] === tab));
+    old.classList.add("stale");
+  } else frame(h("p", { class: "muted" }, "加载中……"));
   try {
-    frame(await VIEWS[tab]());
+    const content = await VIEWS[tab]();
+    if (seq === renderSeq) frame(content);
   } catch (e) {
-    if (e.message !== "login") frame(h("div", { class: "card" }, "出错：", e.message));
+    if (e.message !== "login" && seq === renderSeq) frame(h("div", { class: "card" }, "出错：", e.message));
   }
 }
 
@@ -72,7 +63,7 @@ function loginView() {
   const input = h("input", { type: "password", inputmode: "numeric", placeholder: "家长密码", autofocus: true });
   const err = h("div", { class: "err" });
   const submit = async () => {
-    const res = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pin: input.value }) });
+    const res = await net("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pin: input.value }) });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) return (err.textContent = d.error || "登录失败");
     if (d.role !== "parent") return (err.textContent = "这是孩子的密码，请输入家长密码");

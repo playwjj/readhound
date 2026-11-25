@@ -153,6 +153,13 @@ npx wrangler secret put SESSION_SECRET   # long random string
 npm run deploy
 ```
 
+Schema changes after the first deploy live in `db/migrations/`; run each
+new one once before deploying the code that needs it:
+
+```sh
+npm run db:migrate 0001_polyphones_fixed
+```
+
 Then attach the custom domain (e.g. read.404401.xyz) and add the page to
 the iPad home screen.
 

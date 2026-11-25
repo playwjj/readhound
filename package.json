@@ -1,1 +1,28 @@
-{"description":"ReadHound（字游记）— a family reading coach: AI screens and prepares real reading materials, tracks every new character, and trains reading comprehension as a quest.","devDependencies":{"hanzi":"4.1.2","wrangler":"^4.68.0"},"name":"readhound","private":true,"scripts":{"db:create":"wrangler d1 create readhound","db:init":"wrangler d1 execute readhound --remote --file=db/schema.sql","db:init:local":"wrangler d1 execute readhound --local --file=db/schema.sql","deploy":"wrangler deploy","dev":"wrangler dev","test":"node --test test/*.test.mjs","smoke":"node scripts/smoke.mjs","reset:local":"rm -rf .wrangler/state/v3/d1 && wrangler d1 execute readhound --local --file=db/schema.sql","seed":"node scripts/seed.mjs","difficulty":"node scripts/difficulty.mjs"},"type":"module","version":"0.1.0","dependencies":{"opencc-js":"^1.4.2","pinyin-pro":"^3.29.5"}}
+{
+  "description": "ReadHound（字游记）— a family reading coach: AI screens and prepares real reading materials, tracks every new character, and trains reading comprehension as a quest.",
+  "devDependencies": {
+    "hanzi": "4.1.2",
+    "wrangler": "^4.68.0"
+  },
+  "name": "readhound",
+  "private": true,
+  "scripts": {
+    "db:create": "wrangler d1 create readhound",
+    "db:init": "wrangler d1 execute readhound --remote --file=db/schema.sql",
+    "db:init:local": "wrangler d1 execute readhound --local --file=db/schema.sql",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "reset:local": "rm -rf .wrangler/state/v3/d1 && wrangler d1 execute readhound --local --file=db/schema.sql",
+    "seed": "node scripts/seed.mjs",
+    "difficulty": "node scripts/difficulty.mjs",
+    "db:migrate": "sh -c 'wrangler d1 execute readhound --remote --file=db/migrations/$1.sql' --"
+  },
+  "type": "module",
+  "version": "0.1.0",
+  "dependencies": {
+    "opencc-js": "^1.4.2",
+    "pinyin-pro": "^3.29.5"
+  }
+}

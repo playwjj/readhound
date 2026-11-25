@@ -5,6 +5,7 @@ import { enqueue, step, nextPending, requeue, reapplyFix, enqueueGenerated, aiPa
 import { paragraphs, isHan, newCharsFor, newTier } from "./lib/text.js";
 import { cnDate, addDays, levelReached } from "./lib/logic.js";
 import { ABILITY_NAMES, GENRE_NAMES, GENRES, utcDay } from "./lib/ai.js";
+import { CLASSICS } from "./data/classics.js";
 import { HttpError, safeJSON, snapshot, streakInfo } from "./child.js";
 
 // ---------------------------------------------------------------- report
@@ -243,6 +244,33 @@ export async function aiUsage(env) {
   const today = utcDay();
   const ingestToday = rows.filter((r) => r.day === today && INGEST_PURPOSES.includes(r.purpose)).reduce((n, r) => n + r.calls, 0);
   return { rows, today, ingestToday, limit: s.ai_daily_calls, paused: await aiPausedUntil(env) };
+}
+
+// ---------------------------------------------------------------- classics (retold)
+/** Which classics are still unused (title not in the library, queued or written). */
+async function unusedClassics(env, category) {
+  const titles = CLASSICS[category]?.titles || [];
+  if (!titles.length) return [];
+  const used = new Set((await all(env, `SELECT title FROM articles WHERE title IN (${titles.map(() => "?").join(",")}) OR title IN (${titles.map(() => "?").join(",")})`,
+    ...titles, ...titles.map((t) => `（正在写）${t}`))).map((r) => r.title.replace(/^（正在写）/, "")));
+  return titles.filter((t) => !used.has(t));
+}
+
+export async function classics(env) {
+  const out = [];
+  for (const [key, c] of Object.entries(CLASSICS)) out.push({ key, name: c.name, total: c.titles.length, left: (await unusedClassics(env, key)).length });
+  return { categories: out };
+}
+
+/** Queue `count` retellings from a category (in list order, skipping ones already in the library). */
+export async function queueClassics(env, { category, count }) {
+  const n = Math.max(1, Math.min(Number(count) || 5, 30));
+  const genre = category === "idiom" ? "idiom" : category;
+  const picks = (await unusedClassics(env, category)).slice(0, n);
+  if (!picks.length) throw new HttpError(409, "这一类的经典故事都已经在书库里了");
+  const queued = [];
+  for (const title of picks) queued.push((await enqueueGenerated(env, { retell: title, genre })).id);
+  return { queued: picks, ids: queued };
 }
 
 export async function pipelineStep(env) {

@@ -128,6 +128,8 @@ const STAGE_FN = {
    */
   async generate(env, a) {
     const spec = JSON.parse(a.gen_spec);
+    // targets are chosen now, not when queued: a batch of stories would otherwise teach one set of characters
+    spec.targets = await storyTargets(env);
     const known = await knownSet(env);
     const allowed = new Set([...spec.targets, ...(spec.hero?.name || "")]);
     const rounds = [];
@@ -141,7 +143,8 @@ const STAGE_FN = {
       story = await rewriteStory(env, story, check.extra.slice(0, 15), check.len);
     }
     const report = { ...spec, rounds, targetsUsed: spec.targets.filter((c) => best.story.body.includes(c)) };
-    await run(env, "UPDATE articles SET title = ?, body = ?, gen_spec = ? WHERE id = ?", best.story.title, best.story.body, JSON.stringify(report), a.id);
+    const title = spec.retell || best.story.title; // a retold classic keeps its own name
+    await run(env, "UPDATE articles SET title = ?, body = ?, gen_spec = ? WHERE id = ?", title, best.story.body, JSON.stringify(report), a.id);
   },
 
   async metrics(env, a) {
@@ -275,14 +278,19 @@ export async function storyTargets(env) {
   const met = new Set((await all(env, "SELECT char FROM chars WHERE origin = 'reading'")).map((r) => r.char));
   const upcoming = (await all(env, "SELECT char FROM textbook_chars")).map((r) => r.char).filter((c) => !known.has(c) && !met.has(c));
   const next = [...upcoming, ...LEVEL_ORDER.filter((c) => !known.has(c) && !met.has(c) && rankOf(c) > CORE_RANK)];
-  return [...new Set([...due, ...next])].slice(0, 5);
+  // characters already targeted by stories written but not read yet: let a batch rotate through new ones
+  const pending = await all(env, `SELECT a.gen_spec FROM articles a WHERE a.status IN ('queued','processing','ready','flagged') AND a.gen_spec IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.article_id = a.id) LIMIT 200`);
+  const taken = new Set(pending.flatMap((r) => { try { return JSON.parse(r.gen_spec).targetsUsed || []; } catch { return []; } }));
+  const fresh = [...new Set([...due, ...next])].filter((c) => !taken.has(c));
+  return (fresh.length >= 3 ? fresh : [...new Set([...due, ...next])]).slice(0, 5);
 }
 
 /** Queue a story to be written by the pipeline. */
-export async function enqueueGenerated(env, { hero = false, genre = null, theme = "", focus = null, auto = false } = {}) {
+export async function enqueueGenerated(env, { hero = false, genre = null, theme = "", focus = null, auto = false, retell = null } = {}) {
   const s = await getSettings(env);
   // follow the class: the current textbook unit supplies theme, genre and skill when not given
-  const unit = await currentUnit(env);
+  const unit = retell ? null : await currentUnit(env);
   if (unit) {
     const topics = String(unit.topics || "").split(/[、,，\s]+/).filter((t) => t.length >= 2);
     if (!theme && topics.length) theme = topics[Math.floor(Math.random() * topics.length)];
@@ -291,6 +299,7 @@ export async function enqueueGenerated(env, { hero = false, genre = null, theme 
   }
   const spec = {
     auto,
+    retell: retell ? String(retell).slice(0, 20) : null,
     hero: hero ? { name: s.protagonist?.name || s.child_name, traits: s.protagonist?.traits || "", friends: s.protagonist?.friends || "" } : null,
     genre: GENRES.includes(genre) ? genre : "story",
     theme: String(theme || "").slice(0, 40),
@@ -300,7 +309,7 @@ export async function enqueueGenerated(env, { hero = false, genre = null, theme 
   await run(env, "INSERT OR IGNORE INTO sources (name, kind) VALUES ('AI 定制', 'generated')");
   const src = (await first(env, "SELECT id FROM sources WHERE name = 'AI 定制'")).id;
   const r = await run(env, "INSERT INTO articles (source_id, title, body, genre, status, stage, gen_spec) VALUES (?, ?, '', ?, 'queued', 'generate', ?)",
-    src, `（正在写）${spec.theme || (spec.hero ? `${spec.hero.name}的故事` : "新故事")}`, spec.genre, JSON.stringify(spec));
+    src, `（正在写）${spec.retell || spec.theme || (spec.hero ? `${spec.hero.name}的故事` : "新故事")}`, spec.genre, JSON.stringify(spec));
   return { id: r.meta.last_row_id, spec };
 }
 

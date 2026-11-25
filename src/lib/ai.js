@@ -427,7 +427,20 @@ const FOCUS_HINT = {
   locate: "关键的原因或证据要明确写在某一句话里",
 };
 
+/** Retell a public-domain classic at the child's level (the text is new). */
+export function retellClassicPrompt(spec) {
+  return `请用简单、生动的现代汉语，把经典${GENRE_NAMES[spec.genre] || "故事"}《${spec.retell}》讲给一个四年级孩子（识字量偏少）听。
+要求：
+- 保留原故事的主要人物、情节和寓意，不要改编结局；不要照抄任何现成译本，用你自己的话重新讲；
+- 正文 600–800 字，分 6–10 段；句子短一些，多用对话和动作；${spec.genre === "science" ? "\n- 这是科普短文：讲清楚道理，可以用一个孩子的好奇提问开头，内容要准确；" : ""}
+- 用字尽量简单，以小学一、二年级学过的常用字为主，不用生僻字；
+- 必须自然地用上这些字，每个至少出现两次：${spec.targets.join("、") || "（无）"}；
+- 内容积极健康，没有暴力和恐怖的细节。
+输出格式：第一行是标题《${spec.retell}》，从第二行起是正文，每段一行。不要输出任何其他说明。`;
+}
+
 export function storyPrompt(spec) {
+  if (spec.retell) return retellClassicPrompt(spec);
   const hero = spec.hero
     ? `主人公就是读这篇故事的孩子：名字叫${spec.hero.name}${spec.hero.traits ? `，${spec.hero.traits}` : ""}${spec.hero.friends ? `；好朋友：${spec.hero.friends}` : ""}。`
     : "主人公自拟（适合十岁孩子喜欢的角色）。";

@@ -231,7 +231,20 @@ const VIEWS = {
         await runPipeline(genBtn);
       } catch (e) { toast(e.message); genBtn.disabled = false; }
     } }, "写一篇");
+    const cl = await api("GET", "/api/parent/classics");
+    const cCat = h("select", {}, ...cl.categories.map((c) => h("option", { value: c.key, disabled: !c.left }, `${c.name}（还剩 ${c.left} / ${c.total} 篇）`)));
+    const cCount = h("input", { type: "number", value: 10, min: 1, max: 30, style: "width:90px" });
+    const cBtn = h("button", { onclick: async () => {
+      try {
+        const r = await api("POST", "/api/parent/classics", { category: cCat.value, count: Number(cCount.value) });
+        toast(`已排队 ${r.queued.length} 篇：${r.queued.slice(0, 4).join("、")}${r.queued.length > 4 ? "……" : ""}`, 4000);
+        render();
+      } catch (e) { toast(e.message); }
+    } }, "排队");
     return h("div", {},
+      h("div", { class: "card" }, h("h2", {}, "经典故事改写（书库快速充实）"),
+        h("p", { class: "muted" }, "成语、神话、寓言、童话、历史和科普的经典故事都是公版，由 AI 按孩子当前的识字量用自己的话重新讲一遍——没有版权顾虑，难度也正合适。排队后每天按 AI 额度自动处理（约 7–10 篇/天），也可在“书库”点“立即处理队列”。"),
+        h("div", { class: "row" }, h("div", { style: "flex:1;min-width:220px" }, cCat), cCount, h("span", { class: "muted" }, "篇"), cBtn)),
       h("div", { class: "card" }, h("h2", {}, "AI 定制故事"),
         h("p", { class: "muted" }, "按孩子当前的识字量写一篇：复习到期的生字、引入下一批该学的字，超纲的字会让 AI 改写掉。写完照常走适龄审核和出题。主角设定在“设置”里。"),
         h("div", { class: "grid2" }, h("div", {}, h("label", {}, "主角"), gHero), h("div", {}, h("label", {}, "题材"), gGenre)),

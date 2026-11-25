@@ -387,3 +387,16 @@ test("fluency: homophones from the recogniser are not reading errors; skipped wo
   assert.equal(skipped.accuracy, Math.round((13 / 18) * 100) / 100);
   assert.equal(perfect.cpm, Math.round(18 / 0.1));
 });
+
+import { extract } from "../scripts/import.mjs";
+test("import: web page extraction keeps the story paragraphs, drops boilerplate", () => {
+  const html = `<html><head><title>小蝌蚪找妈妈_儿童故事网</title><script>var x="不要我";</script></head><body>
+    <nav>首页 故事 童话</nav><h1>小蝌蚪找妈妈</h1>
+    <p>池塘里有一群小蝌蚪，大大的脑袋，黑灰色的身子，甩着长长的尾巴，快活地游来游去。</p>
+    <p>小蝌蚪游哇游，过了几天，长出两条后腿。他们看见鲤鱼妈妈在教小鲤鱼捕食。</p>
+    <p>上一篇：小猫钓鱼</p><footer>版权所有 2026</footer></body></html>`;
+  const r = extract(html);
+  assert.equal(r.title, "小蝌蚪找妈妈");
+  assert.equal(r.body.split("\n").length, 2);
+  assert.ok(!r.body.includes("上一篇"));
+});

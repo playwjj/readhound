@@ -187,6 +187,25 @@ the known set grows — the daily pick never prefers a harder tier.
   corpus frequency (`scripts/build-charlevels.mjs`); breaks ties inside a
   volume and orders the common characters the textbooks never teach.
 
+## Filling the library
+
+Content goes in through the parent API, so every article passes the
+normal pipeline (screening, pinyin, questions). From the parent console
+(添加文章), or from a terminal with `scripts/import.mjs`:
+
+```sh
+export READHOUND_URL=https://<your-domain> PARENT_PIN=<parent pin>
+node scripts/import.mjs classics idiom 10   # retell public-domain classics: idiom|myth|fable|fairy|history|science
+node scripts/import.mjs urls list.txt       # web pages you choose, one URL per line, fetched every 2 s
+node scripts/import.mjs txt book.txt        # "=== 标题" separated articles (family books)
+```
+
+Retold classics (成语、神话、寓言、童话、历史、科普 — 140 titles in
+`src/data/classics.js`) are the quickest clean source: the model retells
+each in its own words at the child's level, aiming each story at different
+characters. Queued work is processed every 30 minutes within the daily AI
+budget (`ai_daily_calls`, ~7–10 articles a day by default).
+
 ## Deploy
 
 ```sh

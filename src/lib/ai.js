@@ -2,7 +2,7 @@
 // validated in code and retried; nothing unvalidated reaches the child.
 // Set AI_MOCK = "1" (wrangler.toml [env.dev] / .dev.vars) to run the whole
 // pipeline locally without an account: outputs are deterministic stubs.
-import { paragraphs, isHan } from "./text.js";
+import { paragraphs, isHan, locateSentence, splitSentences } from "./text.js";
 
 export const DEFAULT_MODEL = "@cf/qwen/qwen3.8-27b";
 // Read-aloud: MeloTTS (the only Workers AI model with Chinese) was retired on
@@ -17,7 +17,7 @@ export const GENRE_NAMES = {
 };
 export const ABILITIES = ["extract", "word", "infer", "summarise", "theme"];
 export const ABILITY_NAMES = {
-  extract: "信息提取", word: "词语理解", infer: "推断", summarise: "概括", theme: "道理体会", locate: "回文定位",
+  extract: "信息提取", word: "词语理解", infer: "推断", summarise: "概括", theme: "道理体会", locate: "回文定位", predict: "预测",
 };
 
 // ------------------------------------------------------------------ chat
@@ -205,15 +205,16 @@ ${numbered(body).slice(0, 3200)}
 
 要求输出 JSON：
 {
- "purpose": {"task":"读前给孩子的观察任务（带着问题读），一句话，20 字以内，例如：读的时候留意小狐狸想了几个办法","q":对应下面 questions 里哪一题（从 0 开始的序号）},
+ "purpose": {"task":"读前给孩子的观察任务（带着问题读），一句话，20 字以内，例如：读的时候留意小狐狸想了几个办法","question":{"ability":"extract","prompt":"读完后检查这个任务的题","right":"正确答案","wrong":["错误答案一","错误答案二"],"evidence":答案所在段落编号,"explain":"一句话解析"}},
  "questions": [
-   {"ability":"extract","prompt":"题干","options":["选项A","选项B","选项C"],"answer":正确选项序号(0-2),"evidence":答案所在段落编号,"explain":"答对后给孩子看的一句话解析"}
+   {"ability":"extract","prompt":"题干","right":"正确答案","wrong":["错误答案一","错误答案二"],"evidence":答案所在段落编号（[n] 里的 n）,"explain":"答对后给孩子看的一句话解析"}
  ],
- "guess": {"word":"文中一个含有生字的词语","options":["意思A","意思B","意思C"],"answer":序号,"explain":"一句话说明怎么从上下文猜出来"}
+ "guess": {"word":"文中一个含有生字的词语","right":"它在文中的意思","wrong":["错误意思一","错误意思二"],"explain":"一句话说明怎么从上下文猜出来"}
 }
 规则：
-- questions 共 4 题：信息提取 extract 2 题、推断 infer 1 题、概括或道理 summarise/theme 1 题，按从易到难排列；
-- 每题 3 个选项，只有一个正确，干扰项要看起来合理但能在原文找到否定依据；
+- purpose.question 检查的正是 purpose.task 让孩子留意的内容；
+- questions 另出 3 题：信息提取 extract 1 题、推断 infer 1 题、概括或道理 summarise/theme 1 题，按从易到难排列；
+- 每题一个正确答案、两个错误答案；错误答案要看起来合理，但能在原文找到否定依据；
 - 题干和选项用四年级孩子读得懂的字词，每个选项 20 字以内；
 - evidence 必须是真实存在的段落编号；
 - guess 的词语从这些字所在的词中选一个：${guessChars.join(" ") || "（任选文中一个较难的词）"}，词语必须原样出现在正文里。`;
@@ -222,41 +223,51 @@ ${numbered(body).slice(0, 3200)}
 export function validateQuestions(o, body) {
   const paras = paragraphs(body);
   if (!o || !Array.isArray(o.questions)) throw new Error("questions missing");
-  const checkChoice = (q, where) => {
-    if (!Array.isArray(q.options) || q.options.length < 3 || q.options.length > 4) throw new Error(`${where}: need 3-4 options`);
-    const opts = q.options.map((x) => String(x).trim());
-    if (opts.some((x) => !x || [...x].length > 30)) throw new Error(`${where}: bad option text`);
-    if (new Set(opts).size !== opts.length) throw new Error(`${where}: duplicate options`);
-    const answer = Number(q.answer);
-    if (!Number.isInteger(answer) || answer < 0 || answer >= opts.length) throw new Error(`${where}: bad answer index`);
-    return { options: opts, answer };
-  };
+  let seed = [...body].length;
   const questions = [];
-  o.questions.slice(0, 5).forEach((q, i) => {
+  // the pre-reading task and the question checking it come as one object: no linking by index
+  const pq = o.purpose && typeof o.purpose === "object" ? o.purpose.question : null;
+  const list = [...(pq ? [{ ...pq, task: true }] : []), ...o.questions.slice(0, 4)];
+  let taskIndex = -1;
+  list.slice(0, 5).forEach((q, i) => {
     const prompt = String(q.prompt || "").trim();
     if (!prompt || [...prompt].length > 60) throw new Error(`q${i}: bad prompt`);
     const ability = ABILITIES.includes(q.ability) ? q.ability : "extract";
-    const { options, answer } = checkChoice(q, `q${i}`);
+    const { options, answer } = placeChoice(q.right, q.wrong, seed++, `q${i}`);
     let evidence = Number(q.evidence);
     evidence = Number.isInteger(evidence) && evidence >= 1 && evidence <= paras.length ? evidence - 1 : null;
+    if (q.task === true && taskIndex < 0) taskIndex = questions.length;
     questions.push({ kind: "choice", ability, prompt, options, answer, evidence, explain: String(q.explain || "").slice(0, 80) });
   });
   if (questions.length < 3) throw new Error("need at least 3 questions");
-  let purpose = null;
-  if (o.purpose && o.purpose.task) {
-    const qi = Number(o.purpose.q);
-    purpose = { task: String(o.purpose.task).slice(0, 40), q: Number.isInteger(qi) && qi >= 0 && qi < questions.length ? qi : 0 };
-  }
+  const task = o.purpose?.task;
+  const purpose = task && taskIndex >= 0 ? { task: String(task).slice(0, 40), q: taskIndex } : null;
   let guess = null;
   if (o.guess && o.guess.word && body.includes(String(o.guess.word))) {
     try {
-      const { options, answer } = checkChoice(o.guess, "guess");
+      const { options, answer } = placeChoice(o.guess.right, o.guess.wrong, seed++, "guess");
       const word = String(o.guess.word);
       const para = paras.findIndex((p) => p.includes(word));
       guess = { kind: "guess", ability: "word", prompt: `猜一猜：“${word}”在这里是什么意思？`, word, options, answer, evidence: para, explain: String(o.guess.explain || "").slice(0, 80) };
     } catch { guess = null; }
   }
   return { purpose, questions, guess };
+}
+
+/**
+ * Options from the right text and two wrong ones; code decides the position.
+ * Asking a model for an answer index failed in practice (0- vs 1-based
+ * numbering mixed within one response), so no model ever returns an index.
+ */
+export function placeChoice(right, wrongs, seed, where = "choice") {
+  const r = String(right ?? "").trim();
+  const w = (Array.isArray(wrongs) ? wrongs : []).map((v) => String(v).trim()).slice(0, 2);
+  const opts = [r, ...w];
+  if (w.length !== 2 || opts.some((v) => !v || [...v].length > 30) || new Set(opts).size !== 3) throw new Error(`${where}: need one right text and two different wrong ones`);
+  const answer = Math.abs(seed) % 3;
+  const placed = [...w];
+  placed.splice(answer, 0, r);
+  return { options: placed, answer };
 }
 
 export async function makeQuestions(env, { title, body, guessChars }) {
@@ -266,24 +277,111 @@ export async function makeQuestions(env, { title, body, guessChars }) {
 
 function mockQuestions(body, guessChars) {
   const paras = paragraphs(body);
-  const questions = paras.slice(0, 4).map((p, i) => {
-    const han = [...p].filter(isHan);
-    const right = han.slice(0, 2).join("");
-    return {
-      kind: "choice", ability: ["extract", "extract", "infer", "summarise"][i],
+  const o = {
+    purpose: { task: "（模拟）读的时候留意每段开头的字", question: null },
+    questions: paras.slice(0, 4).map((p, i) => ({
+      ability: ["extract", "extract", "infer", "summarise"][i],
       prompt: `（模拟题）第 ${i + 1} 段开头的两个字是什么？`,
-      options: [right, "小狗", "月亮"].filter((x, j, a) => a.indexOf(x) === j).concat(["星星"]).slice(0, 3),
-      answer: 0, evidence: i, explain: "（模拟解析）回到这一段开头看看。",
-    };
-  });
+      right: [...p].filter(isHan).slice(0, 2).join(""), wrong: ["小狗", "月亮"].filter((x) => !p.startsWith(x)).concat(["星星"]).slice(0, 2),
+      evidence: i + 1, explain: "（模拟解析）回到这一段开头看看。",
+    })),
+    guess: null,
+  };
+  o.purpose.question = o.questions.shift();
   const ch = guessChars[0];
-  let guess = null;
   if (ch) {
     const i = body.indexOf(ch);
     const word = body[i + 1] && isHan(body[i + 1]) ? ch + body[i + 1] : ch;
-    guess = { kind: "guess", ability: "word", prompt: `猜一猜：“${word}”在这里是什么意思？`, word, options: ["（模拟）正确意思", "（模拟）错误意思一", "（模拟）错误意思二"], answer: 0, evidence: paragraphs(body).findIndex((p) => p.includes(word)), explain: "（模拟）联系前后文就能猜到。" };
+    o.guess = { word, right: "（模拟）正确意思", wrong: ["（模拟）错误意思一", "（模拟）错误意思二"], explain: "（模拟）联系前后文就能猜到。" };
   }
-  return { purpose: { task: "（模拟）读的时候留意每段开头的字", q: 0 }, questions, guess };
+  return validateQuestions(o, body);
+}
+
+// ------------------------------------------------------------------ phase-2 skills
+/** Genres with a plot to predict. */
+export const NARRATIVE = new Set(["fable", "fairy", "myth", "story", "idiom", "life"]);
+
+export function skillsPrompt(title, body, narrative) {
+  return `为下面这篇四年级阅读文章设计三种阅读技能训练。孩子书写能力弱，全部用选择或点选。
+标题：${title}
+正文（[n] 是段落编号）：
+${numbered(body).slice(0, 3400)}
+
+输出 JSON：
+{
+ "predict": ${narrative ? `{"after": 读完第几段停下来预测（选情节转折之前，不要选最后两段）, "prompt": "猜一猜：接下来会怎样？（一句话，20 字以内，结合当时情节）", "happens": "后文实际发生的走向，20 字以内", "alternatives": ["另外两个也说得通、但没有发生的走向，每个 20 字以内"], "reveal": 在第几段揭晓, "explain": "揭晓时的一句话"}` : "null"},
+ "locate": [{"prompt": "一道推断题，答案需要回原文找依据，题干 30 字以内", "evidence": "原文中能证明答案的那一句话，必须一字不差地从正文复制，10-40 字", "answer_text": "答案，一句话"}],
+ "sections": [{"from": 起始段号, "to": 结束段号, "summary": "准确概括这部分的一句话，20 字以内", "distractors": ["两个不准确的概括（可以是别的部分的内容，或只说了一个细节），每个 20 字以内"]}]
+}
+规则：
+- locate 出 1–2 题，题干是一个具体的问题（如“阿嗅为什么……？”），不要出“哪种说法正确”这类离开选项就答不了的题；evidence 必须是正文原句；
+- sections 把全文按内容分成 3–5 部分，按顺序覆盖第 1 段到最后一段，不重叠、不遗漏；
+- 用四年级孩子读得懂的字词。`;
+}
+
+export function validateSkills(o, body, narrative) {
+  const paras = paragraphs(body);
+  const n = paras.length;
+  if (!o || typeof o !== "object") throw new Error("expected object");
+  let seed = [...body].length + 7;
+  const choice = (right, wrongs, where) => placeChoice(right, wrongs, seed++, where);
+  const out = [];
+  // predict: optional, narrative only
+  if (narrative && o.predict) {
+    try {
+      const p = o.predict;
+      const after = Number(p.after) - 1, reveal = Number(p.reveal) - 1;
+      if (!(after >= 1 && after <= n - 3 && reveal > after && reveal < n)) throw new Error("predict: bad positions");
+      const { options, answer } = choice(p.happens, p.alternatives, "predict");
+      out.push({ kind: "predict", ability: "predict", prompt: String(p.prompt || "猜一猜：接下来会怎样？").slice(0, 40), options, answer,
+        evidence: reveal, explain: String(p.explain || "").slice(0, 80), meta: { after, reveal } });
+    } catch { /* a bad prediction is dropped, not fatal */ }
+  }
+  // locate: evidence must be a real sentence
+  for (const l of Array.isArray(o.locate) ? o.locate.slice(0, 2) : []) {
+    const at = locateSentence(paras, l.evidence);
+    const prompt = String(l.prompt || "").trim();
+    if (!at || !prompt || [...prompt].length > 50) continue;
+    out.push({ kind: "locate", ability: "locate", prompt, options: splitSentences(paras[at.para]), answer: at.para * 100 + at.sentence,
+      evidence: at.para, explain: String(l.answer_text || "").slice(0, 60), meta: at });
+  }
+  // sections: contiguous cover of 1..n
+  const secs = Array.isArray(o.sections) ? o.sections : [];
+  if (secs.length < Math.min(3, n) || secs.length > 5) throw new Error("sections: need 3-5");
+  let next = 0;
+  const built = secs.map((x, i) => {
+    const from = Number(x.from) - 1, to = Number(x.to) - 1;
+    if (from !== next || to < from || to >= n) throw new Error(`sections: section ${i + 1} does not continue at paragraph ${next + 1}`);
+    next = to + 1;
+    const { options, answer } = choice(x.summary, x.distractors, `section${i}`);
+    return { kind: "section", ability: "summarise", prompt: `第 ${from + 1}${to > from ? `–${to + 1}` : ""} 段主要说什么？`, options, answer, evidence: from, explain: null, meta: { from, to } };
+  });
+  if (next !== n) throw new Error("sections: must cover every paragraph");
+  if (!out.some((x) => x.kind === "locate")) throw new Error("locate: evidence must be copied exactly from the text");
+  return [...out, ...built];
+}
+
+export async function makeSkills(env, { title, body, genre }) {
+  const narrative = NARRATIVE.has(genre);
+  if (env.AI_MOCK === "1") return mockSkills(body, narrative);
+  return generate(env, skillsPrompt(title, body, narrative), (o) => validateSkills(o, body, narrative), { maxTokens: 1500 });
+}
+
+function mockSkills(body, narrative) {
+  const paras = paragraphs(body);
+  const n = paras.length;
+  const first = splitSentences(paras[1] || paras[0])[0];
+  const third = Math.max(1, Math.floor(n / 3));
+  const o = {
+    predict: narrative ? { after: 2, prompt: "（模拟）猜一猜：接下来会怎样？", happens: "（模拟）实际走向", alternatives: ["（模拟）走向二", "（模拟）走向三"], reveal: 4, explain: "（模拟）揭晓" } : null,
+    locate: [{ prompt: "（模拟）哪句话说明了第 2 段的意思？", evidence: first, answer_text: "（模拟）就是这一句" }],
+    sections: [
+      { from: 1, to: third, summary: "（模拟）开头部分", distractors: ["（模拟）错误一", "（模拟）错误二"] },
+      { from: third + 1, to: third * 2, summary: "（模拟）中间部分", distractors: ["（模拟）错误一", "（模拟）错误二"] },
+      { from: third * 2 + 1, to: n, summary: "（模拟）结尾部分", distractors: ["（模拟）错误一", "（模拟）错误二"] },
+    ],
+  };
+  return validateSkills(o, body, narrative);
 }
 
 // ------------------------------------------------------------------ polyphones

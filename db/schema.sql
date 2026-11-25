@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS questions (
   id          INTEGER PRIMARY KEY,
   article_id  INTEGER NOT NULL REFERENCES articles(id),
   ord         INTEGER NOT NULL,
-  kind        TEXT NOT NULL,             -- choice | guess (猜词义, shown inline)
+  kind        TEXT NOT NULL,             -- choice | guess (猜词义, inline) | predict | locate | section
   ability     TEXT NOT NULL,             -- extract | word | infer | summarise | theme
   prompt      TEXT NOT NULL,
   options     TEXT NOT NULL,             -- JSON array of strings
@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS questions (
   evidence    INTEGER,                   -- paragraph index holding the answer
   word        TEXT,                      -- guess: the word being guessed
   explain     TEXT,                      -- shown after answering
+  meta        TEXT,                      -- JSON: predict {after, reveal}; locate {para, sentence}; section {from, to}
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_questions_article ON questions(article_id, ord);

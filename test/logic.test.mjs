@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { articleMetrics, hardScreen, sentences, newCharsFor, rankOf, gradeOf, paragraphs, normalise, newTier, VOLUME_END, textbookInfo } from "../src/lib/text.js";
+import { articleMetrics, hardScreen, sentences, newCharsFor, rankOf, gradeOf, paragraphs, normalise, newTier, VOLUME_END, textbookInfo, splitSentences, locateSentence } from "../src/lib/text.js";
 import { annotate, toneVariants, pinyinChoices, polyphonesIn, applyFixes } from "../src/lib/pinyin.js";
 import {
   verdict, srsUpdate, rankCandidates, adaptTarget, scoreAssessment, sampleLevel, streakFrom, addDays,
   eyeCare, skillsFor, medalsFor, puppyStage, cnDate, levelChars, levelSize, levelReached, ASSESS_LEVELS,
 } from "../src/lib/logic.js";
-import { extractJSON, validateQuestions, validateGlosses, validateScreen, validatePolyphones } from "../src/lib/ai.js";
+import { extractJSON, validateQuestions, validateGlosses, validateScreen, validatePolyphones, validateSkills } from "../src/lib/ai.js";
 import { splitBulk, wikiHtmlToText, suggest } from "../src/parent.js";
 import { readFileSync } from "node:fs";
 
@@ -222,22 +222,24 @@ test("extractJSON tolerates fences and chatter", () => {
   assert.deepEqual(extractJSON('好的：\n```json\n{"a":[1,"}"]}\n```'), { a: [1, "}"] });
 });
 
-test("validateQuestions enforces structure and maps evidence to 0-based", () => {
+test("validateQuestions: code places the right text, task flag links the purpose", () => {
   const body = "第一段讲小狗。\n第二段讲小猫。\n第三段讲小鸟。";
   const ok = validateQuestions({
-    purpose: { task: "留意有几种动物", q: 0 },
+    purpose: { task: "留意有几种动物", question: { ability: "infer", prompt: "一共几种？", right: "三", wrong: ["一", "二"], evidence: 9 } },
     questions: [
-      { ability: "extract", prompt: "第一段讲谁？", options: ["小狗", "小猫", "小鸟"], answer: 0, evidence: 1 },
-      { ability: "extract", prompt: "第二段讲谁？", options: ["小狗", "小猫", "小鸟"], answer: 1, evidence: 2 },
-      { ability: "infer", prompt: "一共几种？", options: ["一", "二", "三"], answer: 2, evidence: 9 },
+      { ability: "extract", prompt: "第一段讲谁？", right: "小狗", wrong: ["小猫", "小鸟"], evidence: 1 },
+      { ability: "extract", prompt: "第二段讲谁？", right: "小猫", wrong: ["小狗", "小鸟"], evidence: 2 },
     ],
-    guess: { word: "小鸟", options: ["鸟", "猫", "狗"], answer: 0 },
+    guess: { word: "小鸟", right: "鸟", wrong: ["猫", "狗"] },
   }, body);
-  assert.equal(ok.questions[0].evidence, 0);
-  assert.equal(ok.questions[2].evidence, null);
+  assert.deepEqual(ok.questions.map((q) => q.options[q.answer]), ["三", "小狗", "小猫"]);
+  assert.equal(ok.questions[1].evidence, 0);
+  assert.equal(ok.questions[0].evidence, null);
+  assert.deepEqual(ok.purpose, { task: "留意有几种动物", q: 0 }); // the task's own question, first
+  assert.equal(ok.guess.options[ok.guess.answer], "鸟");
   assert.equal(ok.guess.evidence, 2);
-  assert.throws(() => validateQuestions({ questions: [{ prompt: "x", options: ["a", "a", "b"], answer: 0 }] }, body));
-  assert.throws(() => validateQuestions({ questions: [{ prompt: "x", options: ["a", "b", "c"], answer: 5 }] }, body));
+  assert.throws(() => validateQuestions({ questions: [{ prompt: "x", right: "a", wrong: ["a", "b"] }] }, body), /different/);
+  assert.equal(validateQuestions({ purpose: { task: "无对应题" }, questions: ok.questions.map(() => ({ prompt: "x", right: "a", wrong: ["b", "c"] })) }, body).purpose, null);
 });
 
 test("validateGlosses falls back to the char when the word is not in the text", () => {
@@ -308,4 +310,36 @@ test("applyFixes rewrites every occurrence of a word, aligned to Han chars", () 
   assert.equal(out[4], "zhǎng");
   assert.equal(out.length, syl.split(" ").length);
   assert.equal(applyFixes(p, syl, [{ word: "长着", pinyin: "zhǎng" }]), syl); // length mismatch ignored
+});
+
+test("splitSentences reassembles exactly; locateSentence finds the evidence", () => {
+  const p = "他说：“你好！”我点点头。真的吗？没有结尾";
+  assert.equal(splitSentences(p).join(""), p);
+  assert.deepEqual(locateSentence(["第一段。", "阿嗅低头一看，书上有个字。它不认识这个字！"], "它不认识这个字"), { para: 1, sentence: 1 });
+  assert.equal(locateSentence(["第一段。"], "原文里没有的句子啊"), null);
+});
+
+test("validateSkills: positions, exact evidence, contiguous sections", () => {
+  const body = ["小狐狸饿了，想吃葡萄。", "葡萄挂得很高，它跳了好几次。", "它还是够不着葡萄。", "它说葡萄是酸的。", "然后它走开了。", "大家都笑了。"].join("\n");
+  const good = {
+    predict: { after: 2, prompt: "接下来会怎样？", happens: "放弃了", alternatives: ["够着了", "找梯子"], reveal: 4, explain: "它说葡萄酸" },
+    locate: [{ prompt: "小狐狸为什么说葡萄酸？", evidence: "它还是够不着葡萄", answer_text: "因为够不着" }],
+    sections: [{ from: 1, to: 2, summary: "想吃", distractors: ["下雨", "睡觉"] }, { from: 3, to: 4, summary: "够不着", distractors: ["吃到了", "回家"] }, { from: 5, to: 6, summary: "走开", distractors: ["飞走", "唱歌"] }],
+  };
+  const out = validateSkills(good, body, true);
+  const loc = out.find((x) => x.kind === "locate");
+  assert.equal(loc.answer, 200); // paragraph 3, sentence 1
+  assert.deepEqual(out.find((x) => x.kind === "predict").meta, { after: 1, reveal: 3 });
+  const secs = out.filter((x) => x.kind === "section");
+  assert.equal(secs.length, 3);
+  // the right text is always where `answer` points, and positions vary
+  assert.deepEqual(secs.map((x) => x.options[x.answer]), ["想吃", "够不着", "走开"]);
+  assert.ok(new Set(secs.map((x) => x.answer)).size > 1);
+  const pr = out.find((x) => x.kind === "predict");
+  assert.equal(pr.options[pr.answer], "放弃了");
+  assert.ok(!validateSkills(good, body, false).some((x) => x.kind === "predict")); // non-narrative: no prediction
+  assert.throws(() => validateSkills({ ...good, sections: [good.sections[0], good.sections[2], good.sections[1]] }, body, true), /does not continue/);
+  assert.throws(() => validateSkills({ ...good, locate: [{ prompt: "?", evidence: "原文没有这句话呀" }] }, body, true), /copied exactly/);
+  // a broken prediction is dropped, not fatal
+  assert.ok(!validateSkills({ ...good, predict: { ...good.predict, reveal: 1 } }, body, true).some((x) => x.kind === "predict"));
 });

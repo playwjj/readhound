@@ -95,8 +95,22 @@ What works end to end:
   (flagged / rejected / force / pick today), textbook character lists,
   manual corrections, settings, rewards, printable monthly passport.
 
-Phase 2 (per proposal): prediction, locate-evidence, paragraph summary
-and voice retelling skills; AI-generated supplementary stories.
+Phase 2 skills (unlock one every `skill_days` completed readings, after
+the phase-1 ones; `skill_days: 0` unlocks all):
+
+- **预测** — reading pauses before a turn of the story; one guess,
+  revealed at the paragraph where it happens; never counts against
+  completion (stories only).
+- **回文定位** — an inference question answered by tapping the evidence
+  sentence in the text (weight 2 in the verdict).
+- **概括段意** — the model splits the article into 3–5 parts; choosing each
+  part's summary assembles an article map.
+
+Models never return answer indexes: they write the right text and the
+wrong ones, and code places them (index numbering was mixed 0-/1-based in
+practice). The pre-reading task comes in one object with its question.
+
+Still to do from phase 2: voice retelling; AI-generated supplementary stories.
 
 ## Development
 

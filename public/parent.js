@@ -292,7 +292,7 @@ const VIEWS = {
         field("pinyin", "拼音标注", sel(s.pinyin, [["all", "全文标注（默认）"], ["new", "只标生字"], ["off", "不标（点字才显示）"]]), "拼音是拐杖：熟练后逐步调降"),
         field("font_size", "正文字号（px）", num(s.font_size, 16, 40), "≥18，默认 22"),
         field("target_new", "每篇目标生字数", num(s.target_new, 2, 10), "系统会按正确率自动升降"),
-        field("skill_days", "每通关几篇解锁一个技能", num(s.skill_days, 1, 30)),
+        field("skill_days", "每通关几篇解锁一个技能", num(s.skill_days, 0, 30), "0 = 所有技能立即解锁"),
         field("session_min", "单次阅读时长（分钟）", num(s.session_min, 5, 40), "到时进入休息页"),
         field("rest_min", "休息页锁定（分钟）", num(s.rest_min, 0, 10)),
         field("daily_limit_min", "每日看屏上限（分钟）", num(s.daily_limit_min, 0, 180), "超过后只能听读；0 = 不限"),
@@ -383,10 +383,17 @@ async function articleView(id) {
         h("table", {}, ...a.glosses.map((g) => h("tr", {}, h("td", { style: "font-size:22px" }, g.char), h("td", {}, g.pinyin), h("td", {}, g.word), h("td", {}, g.gloss || "—"))))),
       h("div", { class: "card" }, h("h2", {}, "闯关题"),
         a.purpose ? h("p", {}, h("b", {}, "读前任务："), a.purpose.task) : null,
-        ...a.questions.map((q) => h("div", { style: "margin-bottom:12px" },
-          h("span", { class: "pill" }, q.kind === "guess" ? "猜词义" : q.abilityName), " ", h("b", {}, q.prompt),
-          h("ol", { type: "A", style: "margin:4px 0" }, ...q.options.map((o, i) => h("li", { style: i === q.answer ? "color:var(--good);font-weight:600" : "" }, o))),
-          q.evidence != null ? h("div", { class: "muted", style: "font-size:13px" }, `依据：第 ${q.evidence + 1} 段`) : null)))),
+        ...a.questions.map((q) => {
+          const label = { guess: "猜词义", predict: "预测", locate: "回文定位", section: "概括段意" }[q.kind] || q.abilityName;
+          let detail;
+          if (q.kind === "locate") detail = h("div", {}, "依据句：", h("span", { style: "color:var(--good);font-weight:600" }, `（第 ${q.meta.para + 1} 段）${q.options[q.meta.sentence] || ""}`), q.explain ? h("div", { class: "muted" }, `答案：${q.explain}`) : null);
+          else detail = h("ol", { type: "A", style: "margin:4px 0" }, ...q.options.map((o, i) => h("li", { style: i === q.answer ? "color:var(--good);font-weight:600" : "" }, o)));
+          const where = q.kind === "predict" ? `读完第 ${q.meta.after + 1} 段停下预测，第 ${q.meta.reveal + 1} 段揭晓（不计入通关判定）`
+            : q.kind === "section" ? null
+            : q.evidence != null ? `依据：第 ${q.evidence + 1} 段` : null;
+          return h("div", { style: "margin-bottom:12px" }, h("span", { class: "pill" }, label), " ", h("b", {}, q.prompt), detail,
+            where ? h("div", { class: "muted", style: "font-size:13px" }, where) : null);
+        }))),
     pinyinCard(a),
     a.reads.length ? h("div", { class: "card" }, h("h2", {}, "阅读记录"), ...a.reads.map((r) => h("div", {}, `${r.date} · ${LEVEL[r.level]} · 正确率 ${pct(r.accuracy)} · ${Math.round(r.active_ms / 60000)} 分钟`))) : null));
 }

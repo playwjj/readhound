@@ -90,6 +90,31 @@ export function sentences(text) {
   return out;
 }
 
+/**
+ * Split one paragraph into sentences that concatenate back to it exactly
+ * (closing quotes stay with their sentence). Used for 回文定位: the server
+ * grades "which sentence" and the client renders tappable sentences from
+ * the same split.
+ */
+export function splitSentences(paragraph) {
+  const parts = String(paragraph).match(/[^。！？!?…]+[。！？!?…]*[”’」』）)]*|[。！？!?…]+[”’」』）)]*/g) || [];
+  return parts.filter((x) => x.length);
+}
+
+/** Find the sentence holding `evidence` (exact substring, or a sentence contained in it). */
+export function locateSentence(paras, evidence) {
+  const ev = String(evidence || "").replace(/\s+/g, "");
+  if ([...ev].filter((c) => HAN.test(c)).length < 4) return null;
+  for (let p = 0; p < paras.length; p++) {
+    const ss = splitSentences(paras[p]);
+    for (let k = 0; k < ss.length; k++) {
+      const sent = ss[k].replace(/\s+/g, "");
+      if (sent.includes(ev) || (ev.includes(sent) && countHan(sent) >= 4)) return { para: p, sentence: k };
+    }
+  }
+  return null;
+}
+
 export function countHan(s) {
   let n = 0;
   for (const ch of s) if (isHan(ch)) n++;

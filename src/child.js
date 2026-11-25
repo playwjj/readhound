@@ -1,7 +1,7 @@
 // Child-facing API: home, daily pick, reading session, quest, rewards,
 // assessment, character archive. The reading path never calls a model.
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet } from "./db.js";
-import { paragraphs, countHan, rankOf, newCharsFor, textbookInfo } from "./lib/text.js";
+import { paragraphs, countHan, rankOf, newCharsFor, textbookInfo, splitSentences } from "./lib/text.js";
 import { readingOf, pinyinChoices } from "./lib/pinyin.js";
 import { pinyin as pinyinPro } from "pinyin-pro";
 import { ensureGlosses } from "./pipeline.js";
@@ -182,12 +182,15 @@ export async function startSession(env, ctx, { extra = false } = {}) {
   const gl = new Map(glossRows.map((g) => [g.char, g]));
   const unglossed = plan.filter((p) => !gl.get(p.char)?.gloss).map((p) => p.char);
   if (unglossed.length && ctx) ctx.waitUntil(ensureGlosses(env, a, unglossed).catch((e) => console.warn("[session] gloss backfill failed", e?.message)));
-  const qs = await all(env, "SELECT id, ord, kind, ability, prompt, options, evidence, word FROM questions WHERE article_id = ? ORDER BY ord", a.id);
-  const answered = await all(env, "SELECT question_id, correct, attempt FROM answers WHERE session_id = ?", s.id);
+  const qs = await all(env, "SELECT id, ord, kind, ability, prompt, options, evidence, word, meta FROM questions WHERE article_id = ? ORDER BY ord", a.id);
+  const answered = await all(env, "SELECT question_id, correct, attempt, choice FROM answers WHERE session_id = ?", s.id);
   const quizDone = await all(env, "SELECT char, correct, retry_ok FROM char_quiz WHERE session_id = ?", s.id);
   const purpose = has("purpose") ? safeJSON(a.purpose, null) : null;
   const choiceQs = qs.filter((q) => q.kind === "choice");
   const guess = has("guess") ? qs.find((q) => q.kind === "guess") : null;
+  const predict = has("predict") ? qs.find((q) => q.kind === "predict") : null;
+  const locates = has("locate") ? qs.filter((q) => q.kind === "locate") : [];
+  const sections = has("summarise") ? qs.filter((q) => q.kind === "section") : [];
   const day = await first(env, "SELECT screen_ms FROM days WHERE date = ?", today);
 
   const card = (p) => {
@@ -198,7 +201,7 @@ export async function startSession(env, ctx, { extra = false } = {}) {
   return {
     session: {
       id: s.id, daily: !!s.daily, level: s.level, lastParagraph: s.last_paragraph, dwell: safeJSON(s.dwell, []), activeMs: s.active_ms,
-      answered: answered.map((x) => ({ questionId: x.question_id, correct: !!x.correct, attempt: x.attempt })),
+      answered: answered.map((x) => ({ questionId: x.question_id, correct: !!x.correct, attempt: x.attempt, choice: x.choice })),
       quizDone: quizDone.map((x) => ({ char: x.char, correct: !!x.correct, retryOk: !!x.retry_ok })),
     },
     article: {
@@ -210,6 +213,14 @@ export async function startSession(env, ctx, { extra = false } = {}) {
     purpose: purpose ? { task: purpose.task, questionId: choiceQs[purpose.q]?.id ?? null } : null,
     guess: guess ? { id: guess.id, prompt: guess.prompt, word: guess.word, options: JSON.parse(guess.options), paragraph: guess.evidence } : null,
     questions: choiceQs.map((q) => ({ id: q.id, ability: q.ability, abilityName: ABILITY_NAMES[q.ability], prompt: q.prompt, options: JSON.parse(q.options), evidence: q.evidence })),
+    predict: predict ? { id: predict.id, prompt: predict.prompt, options: JSON.parse(predict.options), ...safeJSON(predict.meta, {}) } : null,
+    // 回文定位: the evidence paragraph and its neighbours, split into tappable sentences
+    locates: locates.map((q) => {
+      const at = safeJSON(q.meta, {});
+      const shown = [at.para - 1, at.para, at.para + 1].filter((i) => i >= 0 && i < paras.length);
+      return { id: q.id, prompt: q.prompt, paras: shown.map((i) => ({ index: i, sentences: splitSentences(paras[i]) })) };
+    }),
+    sections: sections.map((q) => ({ id: q.id, prompt: q.prompt, options: JSON.parse(q.options), ...safeJSON(q.meta, {}) })),
     charQuiz: plan.filter((p) => p.quiz).map((p, i) => ({
       char: p.char, word: gl.get(p.char)?.word || null, review: !!p.review,
       options: pinyinChoices(p.py, others.filter((o) => o !== p.py), i + s.id, validReadings(p.char)),
@@ -294,6 +305,11 @@ export async function answer(env, id, { questionId, choice }) {
   const q = await first(env, "SELECT * FROM questions WHERE id = ? AND article_id = ?", questionId, s.article_id);
   if (!q) throw new HttpError(404, "question not found");
   const prev = await all(env, "SELECT correct, attempt FROM answers WHERE session_id = ? AND question_id = ? ORDER BY attempt", id, questionId);
+  if (q.kind === "predict") {
+    // a prediction is not right or wrong: one guess, revealed later in the text
+    if (!prev.length) await run(env, "INSERT INTO answers (session_id, question_id, ability, choice, correct, attempt) VALUES (?, ?, 'predict', ?, ?, 1)", id, questionId, Number(choice), Number(choice) === q.answer ? 1 : 0);
+    return { recorded: true, answer: q.answer, explain: q.explain, reveal: q.evidence };
+  }
   if (prev.some((p) => p.correct)) return { correct: true, already: true, answer: q.answer, explain: q.explain };
   const attempt = prev.length + 1;
   if (attempt > MAX_ATTEMPTS) return { correct: false, done: true, answer: q.answer, explain: q.explain, evidence: q.evidence };
@@ -301,7 +317,13 @@ export async function answer(env, id, { questionId, choice }) {
   await run(env, "INSERT INTO answers (session_id, question_id, ability, choice, correct, attempt) VALUES (?, ?, ?, ?, ?, ?)", id, questionId, q.ability, Number(choice), correct, attempt);
   const out = { correct: !!correct, attempt, evidence: q.evidence };
   if (correct) out.explain = q.explain;
-  if (!correct && attempt === 1) out.hint = q.evidence != null ? `回到第 ${q.evidence + 1} 段找一找，答案就在里面。` : "回到文章里找一找。";
+  if (!correct && attempt === 1) {
+    out.hint = q.kind === "locate"
+      ? "不是这一句。想想题目问的是什么，再读一读，换一句试试。"
+      : q.kind === "section"
+        ? "再看看这几段，哪一个说得最全？"
+        : q.evidence != null ? `回到第 ${q.evidence + 1} 段找一找，答案就在里面。` : "回到文章里找一找。";
+  }
   if (!correct && attempt === 2) out.later = true; // move on; a last try comes after re-reading
   if (!correct && attempt >= MAX_ATTEMPTS) {
     out.answer = q.answer;
@@ -352,7 +374,8 @@ async function applySrs(env, char, correct, articleId, py) {
 export async function finish(env, id) {
   const s = await ownSession(env, id);
   const a = await first(env, "SELECT id, body, char_count, genre FROM articles WHERE id = ?", s.article_id);
-  const answers = await all(env, "SELECT a.question_id, a.ability, a.correct, a.attempt, q.evidence FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.session_id = ?", id);
+  // predictions are a reading habit, not a test: they never count toward completion
+  const answers = await all(env, "SELECT a.question_id, a.ability, a.correct, a.attempt, q.evidence FROM answers a JOIN questions q ON q.id = a.question_id WHERE a.session_id = ? AND q.kind <> 'predict'", id);
   const quiz = await all(env, "SELECT correct, retry_ok FROM char_quiz WHERE session_id = ?", id);
   const v = verdict({
     paras: paragraphs(a.body).map(countHan),

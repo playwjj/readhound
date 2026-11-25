@@ -1,12 +1,14 @@
 // Ingest pipeline (§4–§6): one article, one stage per step, so every
 // invocation stays small (Worker CPU limits) and failures retry per stage.
-//   metrics → screen → pinyin → polyphones → encounters → glosses → questions → audio → ready
+//   metrics → screen → pinyin → polyphones → encounters → glosses → questions → skills → audio → ready
 import { all, first, run, stmt, batch, getSettings, knownSet } from "./db.js";
 import { normalise, paragraphs, articleMetrics, hardScreen, rankOf, CORE_RANK, MAX_RANK, VOLUME_END, newCharsFor } from "./lib/text.js";
 import { annotate, readingAt, readingOf, polyphonesIn, applyFixes } from "./lib/pinyin.js";
-import { screenArticle, glossChars, makeQuestions, tts, checkPolyphones } from "./lib/ai.js";
+import { screenArticle, glossChars, makeQuestions, makeSkills, tts, checkPolyphones } from "./lib/ai.js";
 
-export const STAGES = ["metrics", "screen", "pinyin", "polyphones", "encounters", "glosses", "questions", "audio"];
+export const STAGES = ["metrics", "screen", "pinyin", "polyphones", "encounters", "glosses", "questions", "skills", "audio"];
+/** Stages whose failure must not cost the article: they are skipped after the last attempt. */
+const OPTIONAL = new Set(["skills", "audio"]);
 const MAX_ATTEMPTS = 3;
 const GLOSS_CAP = 24;
 
@@ -49,9 +51,11 @@ export async function step(env, article) {
     const msg = String(e && (e.message || e)).slice(0, 300);
     console.error(`[pipeline] #${a.id} ${stage} failed (${attempts}):`, e && (e.stack || msg));
     if (attempts >= MAX_ATTEMPTS) {
-      if (stage === "audio") {
-        // audio is optional: the device voice reads instead
-        await run(env, "UPDATE articles SET status = CASE WHEN age_fit = 'flagged' THEN 'flagged' ELSE 'ready' END, stage = 'done', ready_at = datetime('now'), last_error = ? WHERE id = ?", `audio skipped: ${msg}`, a.id);
+      if (OPTIONAL.has(stage)) {
+        // optional stage: skip it (no phase-2 skill questions / device voice reads)
+        const next = STAGES[STAGES.indexOf(stage) + 1];
+        if (next) await run(env, "UPDATE articles SET status = 'processing', stage = ?, attempts = 0, last_error = ? WHERE id = ?", next, `${stage} skipped: ${msg}`, a.id);
+        else await run(env, "UPDATE articles SET status = CASE WHEN age_fit = 'flagged' THEN 'flagged' ELSE 'ready' END, stage = 'done', ready_at = datetime('now'), last_error = ? WHERE id = ?", `${stage} skipped: ${msg}`, a.id);
       } else {
         await run(env, "UPDATE articles SET status = 'rejected', reject_reason = ?, attempts = ?, last_error = ? WHERE id = ?", `处理失败（${stage}）`, attempts, msg, a.id);
       }
@@ -146,11 +150,20 @@ const STAGE_FN = {
     const q = await makeQuestions(env, { title: a.title, body: a.body, guessChars });
     const list = [...q.questions];
     if (q.guess) list.push(q.guess);
-    await run(env, "DELETE FROM questions WHERE article_id = ?", a.id);
+    await run(env, "DELETE FROM questions WHERE article_id = ? AND kind IN ('choice','guess')", a.id);
     await batch(env, list.map((x, i) => stmt(env,
       "INSERT INTO questions (article_id, ord, kind, ability, prompt, options, answer, evidence, word, explain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       a.id, i, x.kind, x.ability, x.prompt, JSON.stringify(x.options), x.answer, x.evidence, x.word || null, x.explain || null)));
     await run(env, "UPDATE articles SET purpose = ? WHERE id = ?", q.purpose ? JSON.stringify(q.purpose) : null, a.id);
+  },
+
+  /** Phase-2 skills: prediction (stories only), evidence sentence, section summaries. */
+  async skills(env, a) {
+    const list = await makeSkills(env, { title: a.title, body: a.body, genre: a.genre });
+    await run(env, "DELETE FROM questions WHERE article_id = ? AND kind IN ('predict','locate','section')", a.id);
+    await batch(env, list.map((x, i) => stmt(env,
+      "INSERT INTO questions (article_id, ord, kind, ability, prompt, options, answer, evidence, explain, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      a.id, 100 + i, x.kind, x.ability, x.prompt, JSON.stringify(x.options), x.answer, x.evidence, x.explain || null, JSON.stringify(x.meta))));
   },
 
   async audio(env, a) {

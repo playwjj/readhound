@@ -12,7 +12,7 @@ export async function report(env) {
   const today = cnDate();
   const since = addDays(today, -60);
   const radarRows = await all(env, "SELECT ability, SUM(correct) c, COUNT(*) n FROM answers WHERE created_at >= ? AND attempt = 1 GROUP BY ability", since);
-  const radar = Object.keys(ABILITY_NAMES).filter((k) => k !== "locate").map((k) => {
+  const radar = Object.keys(ABILITY_NAMES).filter((k) => k !== "predict").map((k) => {
     const r = radarRows.find((x) => x.ability === k);
     return { ability: k, name: ABILITY_NAMES[k], correct: r?.c || 0, total: r?.n || 0, rate: r && r.n ? Math.round((r.c / r.n) * 100) : null };
   });
@@ -23,8 +23,8 @@ export async function report(env) {
       a.id article_id, a.title, a.char_count, a.genre
     FROM sessions s JOIN articles a ON a.id = s.article_id WHERE s.date >= ? ORDER BY s.date DESC, s.id DESC LIMIT 60`, addDays(today, -45));
   const wrongRows = history.length
-    ? await all(env, `SELECT an.session_id, q.prompt, q.options, q.answer, an.choice, an.attempt, q.ability FROM answers an JOIN questions q ON q.id = an.question_id
-        WHERE an.session_id IN (${history.map(() => "?").join(",")}) AND an.correct = 0 ORDER BY an.id`, ...history.map((h) => h.id))
+    ? await all(env, `SELECT an.session_id, q.kind, q.prompt, q.options, q.answer, an.choice, an.attempt, q.ability FROM answers an JOIN questions q ON q.id = an.question_id
+        WHERE an.session_id IN (${history.map(() => "?").join(",")}) AND an.correct = 0 AND q.kind <> 'predict' ORDER BY an.id`, ...history.map((h) => h.id))
     : [];
   const settings = await getSettings(env);
   const st = await streakInfo(env, today, settings);
@@ -49,7 +49,9 @@ export async function report(env) {
       verdict: safeJSON(h.verdict, null),
       wrong: wrongRows.filter((w) => w.session_id === h.id).map((w) => {
         const opts = safeJSON(w.options, []);
-        return { prompt: w.prompt, chose: opts[w.choice], right: opts[w.answer], attempt: w.attempt, ability: ABILITY_NAMES[w.ability] };
+        // 回文定位 answers are sentence keys (paragraph*100 + sentence)
+        const pick = (v) => (w.kind === "locate" ? `第 ${Math.floor(v / 100) + 1} 段第 ${(v % 100) + 1} 句` : opts[v]);
+        return { prompt: w.prompt, chose: pick(w.choice), right: pick(w.answer), attempt: w.attempt, ability: ABILITY_NAMES[w.ability] };
       }),
     })),
     suggestion: suggest(radar, settings, due?.n || 0),
@@ -95,7 +97,7 @@ export async function articleDetail(env, id) {
     genreName: GENRE_NAMES[a.genre] || a.genre,
     tags: safeJSON(a.tags, []),
     purpose: safeJSON(a.purpose, null),
-    questions: qs.map((q) => ({ ...q, options: safeJSON(q.options, []), abilityName: ABILITY_NAMES[q.ability] })),
+    questions: qs.map((q) => ({ ...q, options: safeJSON(q.options, []), meta: safeJSON(q.meta, null), abilityName: ABILITY_NAMES[q.ability] })),
     glosses: gl,
     newForChild: teachable,
     tierForChild: newTier(teachable.length),
@@ -263,7 +265,7 @@ export async function putSettings(env, body) {
       case "interests": if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) bad(); break;
       case "rewards": if (!Array.isArray(v) || v.some((x) => !(x.bones > 0) || typeof x.item !== "string")) bad(); break;
       case "audio": if (typeof v !== "boolean") bad(); break;
-      case "skill_days": if (!(v >= 1 && v <= 30)) bad(); break;
+      case "skill_days": if (!(v >= 0 && v <= 30)) bad(); break; // 0 = every skill unlocked now
       case "child_name": if (typeof v !== "string" || !v.trim() || v.length > 12) bad(); break;
       case "target_new": if (!(v >= 2 && v <= 10)) bad(); break;
       case "params": if (typeof v !== "object") bad(); break;

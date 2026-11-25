@@ -68,6 +68,8 @@ if (home0.needAssessment) {
   ok(a.estimate > 1250 && a.estimate < 1500 && a.reached === "二年级上册", `estimate ${a.estimate} (约到${a.reached}), known ${a.known}`);
 }
 
+await call("parent", "PUT", "/api/parent/settings", { skill_days: 0 }); // every skill on, so the smoke covers them all
+
 console.log("reading session");
 const home = await call("child", "GET", "/api/home");
 ok(home.article, `today's pick: ${home.article?.title}`);
@@ -89,6 +91,19 @@ const wrong = await call("child", "POST", `/api/session/${sid}/answer`, { questi
 ok(!wrong.correct && wrong.hint && wrong.answer === undefined, "wrong first answer → hint, answer not revealed");
 await call("child", "POST", `/api/session/${sid}/answer`, { questionId: q0.id, choice: answerOf.get(q0.id) });
 for (const q of S.questions.slice(1)) await call("child", "POST", `/api/session/${sid}/answer`, { questionId: q.id, choice: answerOf.get(q.id) });
+
+// phase-2 skills
+ok(S.predict && S.locates.length && S.sections.length >= 3, `skills served: predict after ¶${S.predict?.after + 1}, ${S.locates.length} locate, ${S.sections.length} sections`);
+const P = await call("child", "POST", `/api/session/${sid}/answer`, { questionId: S.predict.id, choice: 2 });
+ok(P.recorded && S.predict.options[P.answer] === "（模拟）实际走向", "prediction recorded, revealed later");
+const L = S.locates[0];
+const lq = det.questions.find((q) => q.id === L.id);
+const wrongKey = L.paras[0].index * 100 + (L.paras[0].index === lq.meta.para ? (lq.meta.sentence + 1) % L.paras[0].sentences.length : 0);
+const lw = await call("child", "POST", `/api/session/${sid}/answer`, { questionId: L.id, choice: wrongKey });
+ok(!lw.correct && lw.hint && lw.answer === undefined, "locate: wrong sentence → hint");
+ok((await call("child", "POST", `/api/session/${sid}/answer`, { questionId: L.id, choice: lq.answer })).correct, "locate: evidence sentence found");
+for (const sec of S.sections) await call("child", "POST", `/api/session/${sid}/answer`, { questionId: sec.id, choice: det.questions.find((q) => q.id === sec.id).answer });
+ok(S.sections[0].from === 0 && S.sections[S.sections.length - 1].to === S.article.paragraphs.length - 1, "sections cover the whole article");
 
 for (const [i, c] of S.charQuiz.entries()) {
   const right = S.newChars.concat(S.reviewChars).find((x) => x.char === c.char).pinyin;
@@ -115,7 +130,8 @@ const col = await call("child", "GET", "/api/collection");
 ok(col.cards.length === S.newChars.length, `collection has ${col.cards.length} cards`);
 const rep = await call("parent", "GET", "/api/parent/report");
 ok(rep.history.length === 1 && rep.radar.some((r) => r.total > 0), "report has history + radar");
-ok(rep.history[0].wrong.length === 1, "report lists the wrong first answer");
+ok(rep.history[0].wrong.length === 2 && !rep.history[0].wrong.some((w) => w.ability === "预测"), "report lists the wrong answers (a different prediction is not one)");
+ok(rep.radar.some((r) => r.ability === "locate" && r.total === 1), "回文定位 on the radar");
 const pp = await call("parent", "GET", "/api/parent/passport");
 ok(pp.sessions.length === 1, "passport lists the reading");
 

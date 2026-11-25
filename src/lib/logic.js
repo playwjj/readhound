@@ -358,9 +358,9 @@ export function skillsFor(completed, every = 5) {
     { key: "extract", name: "找信息", desc: "答案藏在文章里，回去找一找", at: 0, phase: 1 },
     { key: "purpose", name: "带着问题读", desc: "读之前先接一个观察任务", at: every, phase: 1 },
     { key: "guess", name: "猜词义", desc: "联系上下文，猜猜生词的意思", at: every * 2, phase: 1 },
-    { key: "predict", name: "预测", desc: "读到一半，猜猜后面会怎样", at: null, phase: 2 },
-    { key: "locate", name: "回文定位", desc: "在原文中点出依据句", at: null, phase: 2 },
-    { key: "summarise", name: "概括段意", desc: "每段说了什么，拼成文章地图", at: null, phase: 2 },
+    { key: "predict", name: "预测", desc: "读到一半，猜猜后面会怎样", at: every * 3, phase: 2 },
+    { key: "locate", name: "回文定位", desc: "在原文中点出依据句", at: every * 4, phase: 2 },
+    { key: "summarise", name: "概括段意", desc: "每段说了什么，拼成文章地图", at: every * 5, phase: 2 },
     { key: "retell", name: "语音复述", desc: "读完用自己的话讲一遍", at: null, phase: 2 },
   ].map((s) => ({ ...s, unlocked: s.at !== null && completed >= s.at, need: s.at === null ? null : Math.max(0, s.at - completed) }));
 }

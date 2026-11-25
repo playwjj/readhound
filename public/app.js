@@ -421,6 +421,7 @@ async function startReading(extra) {
     const cur = answered.get(a.questionId) || { attempts: 0, correct: false };
     cur.attempts = Math.max(cur.attempts, a.attempt);
     cur.correct = cur.correct || a.correct;
+    cur.choice = a.choice;
     answered.set(a.questionId, cur);
   }
   R = {
@@ -443,7 +444,7 @@ async function startReading(extra) {
 
   if (data.session.level >= 2) return resultView(null, true);
   if (data.eye.listenOnly) return listenOnlyView();
-  const allQ = [...data.questions, ...(data.guess ? [data.guess] : [])];
+  const allQ = [...data.questions, ...(data.guess ? [data.guess] : []), ...data.locates, ...data.sections];
   const questDone = allQ.length && allQ.every((q) => answered.get(q.id)?.correct || (answered.get(q.id)?.attempts || 0) >= 2);
   if (questDone) return charQuizView();
   if (data.session.lastParagraph > 0 || answered.size) return readView();
@@ -653,11 +654,52 @@ function readView() {
     prog.style.width = `${Math.round(((R.idx + 1) / paras.length) * 85 + 10)}%`;
   };
 
+  const predictHere = () => R.predict && R.idx === R.predict.after && !R.answered.has(R.predict.id);
+
+  /** 预测: stop before the turn of the story; one guess, no right or wrong. */
+  const predictCard = () => {
+    const p = R.predict;
+    const modal = h("div", { class: "modal" }, h("div", { class: "sheet" },
+      h("div", { class: "task" }, h("div", { class: "lbl" }, "技能 · 预测"), p.prompt),
+      h("p", { class: "muted" }, "先别往下读！根据前面的内容猜一猜。猜什么都可以，读下去就知道了。"),
+      h("div", { class: "opts" }, ...p.options.map((o, i) => h("button", { onclick: async () => {
+        const r = await questApi("POST", `/api/session/${R.session.id}/answer`, { questionId: p.id, choice: i });
+        if (!r) return;
+        R.answered.set(p.id, { attempts: 1, correct: i === r.answer, choice: i });
+        R.predictResult = r;
+        modal.remove();
+        toast("记住你的猜测，往下读揭晓！", 2600);
+        drawActions();
+      } }, o)))));
+    document.body.append(modal);
+  };
+
+  const revealPrediction = async () => {
+    const p = R.predict, mine = R.answered.get(p.id);
+    if (!p || !mine || R.revealShown) return;
+    R.revealShown = true;
+    const r = R.predictResult || await questApi("POST", `/api/session/${R.session.id}/answer`, { questionId: p.id, choice: mine.choice });
+    if (!r) return;
+    const same = mine.choice === r.answer;
+    const modal = h("div", { class: "modal" }, h("div", { class: "sheet" },
+      h("div", { class: "task" }, h("div", { class: "lbl" }, "🔮 揭晓"), same ? "你猜中了！" : "故事走向了另一个方向"),
+      h("p", {}, "你猜的是：", h("b", {}, p.options[mine.choice])),
+      same ? null : h("p", {}, "实际上：", h("b", {}, p.options[r.answer])),
+      r.explain ? h("p", { class: "muted" }, r.explain) : null,
+      same ? null : h("p", { class: "muted" }, "猜得不一样也很好——作家常常喜欢出人意料。"),
+      h("div", { class: "row center" }, h("button", { onclick: () => modal.remove() }, "接着读"))));
+    document.body.append(modal);
+  };
+
   const guessHere = () => R.guess && R.guess.paragraph === R.idx && !(R.answered.get(R.guess.id)?.correct || (R.answered.get(R.guess.id)?.attempts || 0) >= 2);
 
   const drawActions = () => {
     actions.replaceChildren();
     actions.append(h("button", { class: "soft", onclick: () => playParagraph(paras[R.idx]) }, "🔊 读这一段"));
+    if (predictHere()) {
+      actions.append(h("button", { onclick: () => predictCard() }, "🔮 猜猜后面会怎样"));
+      return;
+    }
     if (guessHere()) {
       actions.append(h("button", { onclick: () => guessCard() }, "🤔 猜一猜词义"));
       return;
@@ -676,6 +718,7 @@ function readView() {
   const next = () => {
     stopAudio();
     R.idx++;
+    if (R.predict && R.idx === R.predict.reveal) setTimeout(revealPrediction, 600);
     drawParas();
     drawActions();
     flush();
@@ -785,13 +828,117 @@ async function questView(only) {
   if (R.purpose?.questionId) qs.sort((a, b) => (b.id === R.purpose.questionId) - (a.id === R.purpose.questionId));
   for (let n = 0; n < qs.length; n++) await askQuestion(qs[n], n, qs.length, !!only);
   if (R.guess && only && only.includes(R.guess.id)) await askQuestion({ ...R.guess, abilityName: "猜词义", evidence: R.guess.paragraph }, 0, 1, true);
+  const pending = (q) => (only ? only.includes(q.id) : !(R.answered.get(q.id)?.correct || (R.answered.get(q.id)?.attempts || 0) >= 2));
+  const locs = R.locates.filter(pending);
+  for (let n = 0; n < locs.length; n++) await askLocate(locs[n], n, locs.length, !!only);
+  const secs = R.sections.filter(pending);
+  if (secs.length) await articleMap(secs, !!only);
   charQuizView();
+}
+
+/** Render text with per-character pinyin, consuming syllables from `syl` (shared across sentences). */
+function rubyText(text, syl) {
+  const frag = document.createDocumentFragment();
+  for (const ch of text) {
+    if (!isHan(ch)) { frag.append(ch); continue; }
+    const py = syl.shift() || "";
+    frag.append(R.settings.pinyin === "all" ? h("ruby", { class: "hz" }, ch, h("rt", {}, py)) : h("span", { class: "hz" }, ch));
+  }
+  return frag;
+}
+
+/** 回文定位: tap the sentence that proves the answer. */
+function askLocate(q, n, total, retryRound) {
+  return new Promise((resolve) => {
+    let picked = null;
+    const fb = h("div", { class: "feedback", hidden: true });
+    const nextBtn = h("button", { class: "big", hidden: true, onclick: resolve }, "继续");
+    const confirm = h("button", { disabled: true }, "就是这句 ✓");
+    const sentEls = [];
+    const paras = q.paras.map((p) => {
+      const syl = (R.article.paragraphs[p.index].py || "").split(" ");
+      const box = h("div", { class: "para current with-py" }, h("span", { class: "no" }, `第 ${p.index + 1} 段`));
+      p.sentences.forEach((text, k) => {
+        const key = p.index * 100 + k;
+        const el = h("span", { class: "sent", onclick: () => {
+          if (el.classList.contains("nope") || !nextBtn.hidden) return;
+          sentEls.forEach((x) => x.classList.remove("picked"));
+          el.classList.add("picked");
+          picked = key;
+          confirm.disabled = false;
+        } }, rubyText(text, syl));
+        el.dataset.key = key;
+        sentEls.push(el);
+        box.append(el);
+      });
+      return box;
+    });
+    confirm.onclick = async () => {
+      const r = await questApi("POST", `/api/session/${R.session.id}/answer`, { questionId: q.id, choice: picked });
+      if (!r) return;
+      const st = R.answered.get(q.id) || { attempts: 0, correct: false };
+      st.attempts = r.attempt || st.attempts + 1;
+      st.correct = st.correct || r.correct;
+      R.answered.set(q.id, st);
+      const el = sentEls.find((x) => Number(x.dataset.key) === picked);
+      fb.hidden = false;
+      if (r.correct) {
+        el.classList.replace("picked", "right");
+        fb.className = "feedback ok";
+        fb.replaceChildren(h("b", {}, "找到了！🐾 "), r.explain || "");
+        confirm.hidden = true;
+        nextBtn.hidden = false;
+      } else {
+        el.classList.replace("picked", "nope");
+        confirm.disabled = true;
+        fb.className = "feedback try";
+        if (r.answer != null) {
+          sentEls.find((x) => Number(x.dataset.key) === r.answer)?.classList.add("right");
+          fb.replaceChildren("这句话还没被找到，绿色的就是依据句。", r.explain ? h("div", {}, r.explain) : "");
+          confirm.hidden = true;
+          nextBtn.hidden = false;
+        } else if (r.later) {
+          fb.textContent = "这题有点难，先往下走，等会儿再回来找。";
+          confirm.hidden = true;
+          nextBtn.hidden = false;
+        } else fb.textContent = r.hint || "不是这一句，再找找。";
+      }
+    };
+    show(...header(R.article.title, 0.75),
+      h("div", { class: "card" },
+        h("div", { class: "row" }, h("span", { class: "ability" }, "回文定位"), retryRound ? h("span", { class: "ability" }, "再试一次") : null,
+          h("span", { class: "spacer" }), h("span", { class: "muted" }, `${n + 1} / ${total}`)),
+        h("div", { class: "q" }, q.prompt),
+        h("p", { class: "muted", style: "margin-top:-8px" }, "在下面的原文里，点出能证明答案的那一句话。")),
+      ...paras,
+      h("div", { class: "card" }, fb, h("div", { class: "row end", style: "margin-top:10px" }, confirm, nextBtn)));
+  });
+}
+
+/** 概括段意: one summary per section, then the assembled article map. */
+async function articleMap(secs, retryRound) {
+  const found = new Map();
+  for (let n = 0; n < secs.length; n++) {
+    const q = secs[n];
+    const idx = await askQuestion({ ...q, abilityName: "概括段意 · 拼文章地图", evidence: q.from }, n, secs.length, retryRound);
+    if (idx != null) found.set(q.id, q.options[idx]);
+  }
+  await new Promise((resolve) => show(...header(R.article.title, 0.85),
+    h("div", { class: "card" },
+      h("h2", {}, "🗺 文章地图"),
+      h("p", { class: "muted" }, "整篇文章就是这样一步步讲下来的："),
+      ...R.sections.map((q, i) => h("div", { class: "map-row" },
+        h("span", { class: "map-no" }, i + 1),
+        h("div", {}, h("div", { class: "muted", style: "font-size:14px" }, `第 ${q.from + 1}${q.to > q.from ? `–${q.to + 1}` : ""} 段`),
+          h("div", {}, found.get(q.id) || (R.answered.get(q.id)?.correct ? "✓ 已拼好" : "（这一块还没拼好）"))))),
+      h("div", { class: "row end", style: "margin-top:12px" }, h("button", { onclick: resolve }, "继续")))));
 }
 
 function askQuestion(q, n, total, retryRound) {
   return new Promise((resolve) => {
     const fb = h("div", { class: "feedback", hidden: true });
-    const nextBtn = h("button", { class: "big", hidden: true, onclick: resolve }, n < total - 1 ? "下一题" : "完成闯关");
+    let rightIndex = null; // resolved to the caller (the article map needs it)
+    const nextBtn = h("button", { class: "big", hidden: true, onclick: () => resolve(rightIndex) }, n < total - 1 ? "下一题" : "完成闯关");
     const opts = h("div", { class: "opts" });
     const isTask = R.purpose?.questionId === q.id;
     q.options.forEach((o, i) => opts.append(h("button", { onclick: async (e) => {
@@ -804,6 +951,7 @@ function askQuestion(q, n, total, retryRound) {
       R.answered.set(q.id, st);
       fb.hidden = false;
       if (r.correct) {
+        rightIndex = i;
         btn.classList.add("right");
         opts.querySelectorAll("button").forEach((b) => (b.disabled = true));
         fb.className = "feedback ok";
@@ -811,6 +959,7 @@ function askQuestion(q, n, total, retryRound) {
         nextBtn.hidden = false;
       } else if (r.answer != null || r.done) {
         // last try: show the right answer kindly
+        rightIndex = r.answer;
         opts.querySelectorAll("button").forEach((b, k) => { b.disabled = true; if (k === r.answer) b.classList.add("right"); });
         fb.className = "feedback try";
         fb.replaceChildren("这道题还没被驯服。正确答案已经标出来了。", r.explain ? h("div", {}, r.explain) : "");

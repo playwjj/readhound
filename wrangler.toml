@@ -14,7 +14,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "readhound"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "61aebbb2-33df-4985-9dc2-48f053f67209"
 
 # Pre-generated read-aloud audio files
 [[r2_buckets]]

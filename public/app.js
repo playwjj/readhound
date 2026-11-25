@@ -1051,7 +1051,7 @@ async function finishSession() {
 
 function confetti() {
   const box = h("div", { class: "confetti" });
-  const colors = ["#e07a3f", "#f2c230", "#3f8f5a", "#3e74b8", "#e86aa0"];
+  const colors = ["#7b5cc8", "#f2c230", "#3f8f5a", "#3e74b8", "#e86aa0"];
   for (let i = 0; i < 60; i++) {
     box.append(h("i", { style: `left:${Math.random() * 100}%;background:${colors[i % colors.length]};animation-delay:${Math.random() * 0.8}s;animation-duration:${2 + Math.random() * 1.5}s` }));
   }

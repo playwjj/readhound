@@ -95,7 +95,7 @@ function radarChart(items) {
     g.append(svg("text", { x, y, "text-anchor": "middle", "dominant-baseline": "middle" }, `${it.name} ${it.rate == null ? "—" : it.rate + "%"}`));
   });
   const pts = items.map((it, i) => pt(i, (R * (it.rate ?? 0)) / 100).join(",")).join(" ");
-  g.append(svg("polygon", { points: pts, fill: "rgba(224,122,63,.25)", stroke: "var(--accent)", "stroke-width": 2 }));
+  g.append(svg("polygon", { points: pts, fill: "rgba(123,92,200,.22)", stroke: "var(--accent)", "stroke-width": 2 }));
   return g;
 }
 

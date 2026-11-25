@@ -30,7 +30,7 @@ export function pupSVG(stage = "pup", accessories = [], mood = "happy") {
   if (has("bow")) parts.push('<g fill="#e86aa0"><path d="M150 52 l-16 -10 v20z"/><path d="M150 52 l16 -10 v20z"/><circle cx="150" cy="52" r="5"/></g>');
   if (has("hat")) parts.push('<path d="M58 58 q52 -40 104 0 z" fill="#7a5a3c"/><rect x="48" y="54" width="124" height="10" rx="5" fill="#5c4129"/>');
   if (has("crown")) parts.push('<path d="M80 50 l8 -26 l14 16 l8 -22 l8 22 l14 -16 l8 26 z" fill="#f2c230" stroke="#c9912b" stroke-width="3"/>');
-  if (has("headphones")) parts.push('<path d="M54 92 q0 -70 112 0" stroke="#444" stroke-width="7" fill="none"/><rect x="42" y="84" width="18" height="30" rx="8" fill="#e07a3f"/><rect x="160" y="84" width="18" height="30" rx="8" fill="#e07a3f"/>');
+  if (has("headphones")) parts.push('<path d="M54 92 q0 -70 112 0" stroke="#444" stroke-width="7" fill="none"/><rect x="42" y="84" width="18" height="30" rx="8" fill="#8a6ad4"/><rect x="160" y="84" width="18" height="30" rx="8" fill="#8a6ad4"/>');
   if (has("badge")) parts.push('<path d="M110 164 l6 12 h13 l-10 8 l4 13 l-13 -8 l-13 8 l4 -13 l-10 -8 h13z" fill="#f2c230"/>');
   if (has("magnifier")) parts.push('<circle cx="36" cy="176" r="16" fill="rgba(180,220,255,.5)" stroke="#555" stroke-width="5"/><path d="M48 188 l16 16" stroke="#555" stroke-width="7" stroke-linecap="round"/>');
   if (stage === "legend") parts.push('<circle cx="110" cy="110" r="104" fill="none" stroke="#f2c230" stroke-width="3" stroke-dasharray="6 10"/>');

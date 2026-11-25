@@ -1,38 +1,40 @@
 /* ReadHound — child-first reading UI.
    Eye-care rules (proposal §15): large type, 1.8 line-height, limited
-   line length, warm off-white background, low-light night theme. */
+   line length, soft low-contrast background, low-light night theme. */
 :root {
-  --bg: #fdf6e9;
-  --card: #fffdf7;
-  --ink: #33302a;
-  --ink-soft: #6f675b;
-  --line: #eadfcb;
-  --accent: #e07a3f;
-  --accent-soft: #fbe3d3;
+  /* purple theme, kept soft for eye care: low-saturation lavender ground,
+     one mid purple accent; yellow stays the "new character" mark */
+  --bg: #f6f3fb;
+  --card: #fdfcff;
+  --ink: #2f2a3a;
+  --ink-soft: #6b6480;
+  --line: #e4dcf2;
+  --accent: #7b5cc8;
+  --accent-soft: #ece4fa;
   --accent-ink: #ffffff;
   --good: #3f8f5a;
   --good-soft: #dcefe2;
   --gold: #c9912b;
   --gold-soft: #fbefd2;
   --blue: #3e74b8;
-  --blue-soft: #dfe9f6;
+  --blue-soft: #e2e9f7;
   --new-mark: #fff0a8;
-  --shadow: 0 2px 12px rgba(90, 70, 40, 0.09);
+  --shadow: 0 2px 12px rgba(70, 50, 110, 0.09);
   --read-size: 22px;
   --radius: 20px;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1d1b18; --card: #282521; --ink: #d9d2c5; --ink-soft: #a39a8b; --line: #3b3630;
-    --accent: #d9864f; --accent-soft: #4a3123; --good: #74b98a; --good-soft: #263b2c;
+    --bg: #1b1922; --card: #25222e; --ink: #ddd6ea; --ink-soft: #a49cb8; --line: #3a3547;
+    --accent: #a58be6; --accent-soft: #382d52; --good: #74b98a; --good-soft: #263b2c;
     --gold: #d6a84c; --gold-soft: #3d3220; --blue: #7ea6d8; --blue-soft: #23303f;
     --new-mark: #4d4422; --shadow: 0 2px 12px rgba(0, 0, 0, 0.35); color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #1d1b18; --card: #282521; --ink: #d9d2c5; --ink-soft: #a39a8b; --line: #3b3630;
-  --accent: #d9864f; --accent-soft: #4a3123; --good: #74b98a; --good-soft: #263b2c;
+  --bg: #1b1922; --card: #25222e; --ink: #ddd6ea; --ink-soft: #a49cb8; --line: #3a3547;
+  --accent: #a58be6; --accent-soft: #382d52; --good: #74b98a; --good-soft: #263b2c;
   --gold: #d6a84c; --gold-soft: #3d3220; --blue: #7ea6d8; --blue-soft: #23303f;
   --new-mark: #4d4422; --shadow: 0 2px 12px rgba(0, 0, 0, 0.35); color-scheme: dark;
 }

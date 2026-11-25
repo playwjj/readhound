@@ -80,6 +80,16 @@ What works end to end:
   redemption table.
 - **Eye care** — session length → rest page, daily screen limit and
   bedtime → listen-only, night theme, large type.
+- **Pinyin quality** — Qwen checks every polyphonic character against
+  pinyin-pro's candidates (it can only choose among them; neutral tones
+  such as 喜欢 xǐ huan are kept); parents fix any word (长着 = zhǎng zhe)
+  and the fix applies across the library.
+- **Offline** — today's opened article stays on the device; reading
+  continues without network and progress syncs when it is back. Quest
+  questions need the network (they are judged on the server).
+- **Read-aloud** — the device's Chinese voice. MeloTTS, the only Workers AI
+  model with Chinese, was retired on 2026-11-20; set `TTS_MODEL` to
+  pre-generate audio again if a Chinese model appears.
 - **Parent console** (`/parent.html`) — ability radar, literacy curve,
   reading history with wrong answers, suggestions, library review
   (flagged / rejected / force / pick today), textbook character lists,

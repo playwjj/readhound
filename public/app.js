@@ -28,13 +28,24 @@ function toast(msg, ms = 2200) {
   document.body.append(t);
   setTimeout(() => t.remove(), ms);
 }
+class Offline extends Error {
+  constructor() {
+    super("网络断开了");
+    this.offline = true;
+  }
+}
 async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { "content-type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-    credentials: "same-origin",
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body ? { "content-type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new Offline();
+  }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) {
     loginView();
@@ -44,6 +55,67 @@ async function api(method, path, body) {
   return data;
 }
 const isHan = (c) => /\p{Script=Han}/u.test(c);
+
+// ---------------------------------------------------------------- offline store
+// Today's opened article is kept on the device so reading continues without
+// network; progress waits in a queue and is sent when the network is back.
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const store = {
+  get(k) {
+    try { return JSON.parse(localStorage.getItem(k)); } catch { return null; }
+  },
+  set(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode / full: reading still works online */ }
+  },
+};
+function cacheSession(extra, data) {
+  store.set(`rh_session_${extra ? "extra" : "daily"}`, { day: today(), data });
+}
+function cachedSession(extra) {
+  const c = store.get(`rh_session_${extra ? "extra" : "daily"}`);
+  return c && c.day === today() ? c.data : null;
+}
+/** Merge a progress body into the pending queue (one entry per session; dwell is cumulative). */
+function queueProgress(sessionId, body) {
+  const q = store.get("rh_pending") || {};
+  const prev = q[sessionId];
+  if (prev) {
+    body.taps = [...(prev.taps || []), ...(body.taps || [])];
+    body.screenMsDelta = (prev.screenMsDelta || 0) + (body.screenMsDelta || 0);
+    body.lastParagraph = Math.max(prev.lastParagraph || 0, body.lastParagraph || 0);
+  }
+  q[sessionId] = body;
+  store.set("rh_pending", q);
+}
+async function sendPending() {
+  const q = store.get("rh_pending") || {};
+  for (const [id, body] of Object.entries(q)) {
+    try {
+      await api("POST", `/api/session/${id}/progress`, body);
+      delete q[id];
+    } catch (e) {
+      if (!e.offline) delete q[id]; // a server-side refusal will not get better by retrying
+    }
+  }
+  store.set("rh_pending", q);
+}
+addEventListener("online", () => { sendPending(); toast("网络回来了，进度已同步"); });
+/** Quest calls need the network (answers are judged on the server). Offline → a gentle note, nothing lost. */
+async function questApi(method, path, body) {
+  try {
+    return await api(method, path, body);
+  } catch (e) {
+    if (e.offline) toast("闯关需要联网：连上网再点一次，读过的进度都还在", 3200);
+    else if (e.message !== "login") toast(e.message);
+    return null;
+  }
+}
+function offlineCard(msg, retry) {
+  return h("div", { class: "card center", style: "padding:28px 20px" },
+    h("div", { style: "font-size:48px" }, "📶"),
+    h("p", { style: "font-size:20px" }, msg),
+    h("div", { class: "row center" }, h("button", { onclick: retry }, "连上了，再试一次"), R ? h("button", { class: "ghost", onclick: () => readView() }, "先接着读") : null));
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- voice
@@ -189,8 +261,16 @@ function loginView() {
 async function boot() {
   try {
     state.home = await api("GET", "/api/home");
+    sendPending();
   } catch (e) {
-    if (e.message !== "login") show(h("div", { class: "card center" }, h("p", {}, "网络不太顺，检查一下再打开。"), h("button", { onclick: boot }, "再试一次")));
+    if (e.message === "login") return;
+    const cached = e.offline && cachedSession(false);
+    show(h("div", { class: "card center" },
+      h("p", {}, e.offline ? "现在没有网络。" : "网络不太顺，检查一下再打开。"),
+      cached ? h("p", { class: "muted" }, `今天的《${cached.article.title}》已经存在平板里，可以先读，进度联网后会同步。`) : null,
+      h("div", { class: "row center" },
+        cached ? h("button", { class: "big", onclick: () => startReading(false) }, "离线接着读") : null,
+        h("button", { class: cached ? "ghost" : "", onclick: boot }, "再试一次"))));
     return;
   }
   clock.sessionMin = state.home.eye.sessionMin;
@@ -321,9 +401,19 @@ async function startReading(extra) {
   let data;
   try {
     data = await api("POST", "/api/session/start", { extra });
+    cacheSession(extra, data);
   } catch (e) {
-    if (e.message !== "login") toast(e.message);
-    return;
+    if (e.message === "login") return;
+    data = e.offline ? cachedSession(extra) : null;
+    if (!data) return toast(e.offline ? "没有网络，今天的故事还没下载到平板上" : e.message);
+    toast("离线阅读中：进度会在联网后同步", 3200);
+    // pick up progress made offline earlier today
+    const pending = (store.get("rh_pending") || {})[data.session.id];
+    if (pending) {
+      data.session.lastParagraph = Math.max(data.session.lastParagraph, pending.lastParagraph || 0);
+      data.session.dwell = pending.dwell || data.session.dwell;
+      data.session.activeMs = Math.max(data.session.activeMs, pending.activeMs || 0);
+    }
   }
   document.documentElement.style.setProperty("--read-size", `${data.settings.fontSize}px`);
   const answered = new Map();
@@ -373,10 +463,20 @@ async function flush() {
   if (!R) return;
   const body = { lastParagraph: R.idx, dwell: R.dwell, activeMs: R.activeMs, taps: R.taps.splice(0), screenMsDelta: clock.screenDelta };
   clock.screenDelta = 0;
+  // keep the on-device copy at the current position, so an offline reopen resumes here
+  const key = `rh_session_${R.session.daily ? "daily" : "extra"}`;
+  const c = store.get(key);
+  if (c && c.data.session.id === R.session.id) {
+    Object.assign(c.data.session, { lastParagraph: Math.max(c.data.session.lastParagraph, R.idx), dwell: R.dwell, activeMs: R.activeMs });
+    store.set(key, c);
+  }
   try {
     const r = await api("POST", `/api/session/${R.session.id}/progress`, body);
     if (r.eye) R.eye = r.eye;
-  } catch { /* retried next time; dwell is cumulative */ }
+  } catch (e) {
+    // keep it (taps and screen time included) until the network is back
+    if (e.offline) queueProgress(R.session.id, body);
+  }
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { flush(); stopAudio(); } });
 
@@ -591,7 +691,8 @@ function readView() {
     const done = () => { modal.remove(); drawActions(); };
     g.options.forEach((o, i) => opts.append(h("button", { onclick: async (e) => {
       const btn = e.currentTarget;
-      const r = await api("POST", `/api/session/${R.session.id}/answer`, { questionId: g.id, choice: i });
+      const r = await questApi("POST", `/api/session/${R.session.id}/answer`, { questionId: g.id, choice: i });
+      if (!r) return;
       const st = R.answered.get(g.id) || { attempts: 0, correct: false };
       st.attempts = r.attempt || st.attempts + 1;
       st.correct = st.correct || r.correct;
@@ -695,7 +796,8 @@ function askQuestion(q, n, total, retryRound) {
     const isTask = R.purpose?.questionId === q.id;
     q.options.forEach((o, i) => opts.append(h("button", { onclick: async (e) => {
       const btn = e.currentTarget;
-      const r = await api("POST", `/api/session/${R.session.id}/answer`, { questionId: q.id, choice: i });
+      const r = await questApi("POST", `/api/session/${R.session.id}/answer`, { questionId: q.id, choice: i });
+      if (!r) return;
       const st = R.answered.get(q.id) || { attempts: 0, correct: false };
       st.attempts = r.attempt || st.attempts + 1;
       st.correct = st.correct || r.correct;
@@ -760,7 +862,8 @@ async function charQuizView(retryChars) {
           h("div", { class: "big" }, it.char), word,
           h("div", { class: "opts py", style: "margin-top:16px" }, ...it.options.map((o) => h("button", { onclick: async (e) => {
             const btn = e.currentTarget;
-            const r = await api("POST", `/api/session/${R.session.id}/charquiz`, { char: it.char, choice: o, retry: !!retryChars });
+            const r = await questApi("POST", `/api/session/${R.session.id}/charquiz`, { char: it.char, choice: o, retry: !!retryChars });
+      if (!r) return;
             R.quiz.set(it.char, { char: it.char, correct: r.correct });
             btn.parentElement.querySelectorAll("button").forEach((b) => { b.disabled = true; if (b.textContent === r.pinyin) b.classList.add("right"); });
             fb.hidden = false;
@@ -789,7 +892,8 @@ async function finishSession() {
   try {
     r = await api("POST", `/api/session/${R.session.id}/finish`);
   } catch (e) {
-    if (e.message !== "login") toast(e.message);
+    if (e.offline) show(offlineCard("快通关了！需要联网才能结算，连上网再点一次。", finishSession));
+    else if (e.message !== "login") toast(e.message);
     return;
   }
   resultView(r, false);

@@ -139,7 +139,8 @@ const STAGE_FN = {
       const check = checkStory(story, known, allowed);
       rounds.push({ len: check.len, extra: check.extra.length, hard: check.extra.slice(0, 12).join("") });
       if (!best || check.score < best.check.score) best = { story, check };
-      if (check.ok || round === 2) break;
+      // before the baseline test every character counts as unknown: rewriting cannot help
+      if (check.ok || round === 2 || known.size < 300) break;
       story = await rewriteStory(env, story, check.extra.slice(0, 15), check.len);
     }
     const report = { ...spec, rounds, targetsUsed: spec.targets.filter((c) => best.story.body.includes(c)) };

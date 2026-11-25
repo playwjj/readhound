@@ -4,6 +4,8 @@ import { useRouter } from "vue-router";
 import { api, toast, attempt } from "../api.js";
 import { GENRES } from "../labels.js";
 import { usePipeline } from "../pipeline.js";
+import Shelf from "../components/Shelf.vue";
+import UrlImport from "../components/UrlImport.vue";
 
 const router = useRouter();
 const classics = ref(await api("GET", "/api/parent/classics"));
@@ -59,14 +61,17 @@ const ws = reactive({ title: "", genre: "" });
 async function importWs() {
   await attempt(async () => {
     const r = await api("POST", "/api/parent/import/wikisource", { ...ws });
-    toast(r.duplicate ? "已存在" : `已加入队列 #${r.id}`);
+    toast(r.parts?.length > 1 ? `切成 ${r.parts.length} 篇加入队列` : r.duplicate ? "已存在" : `已加入队列 #${r.id}`);
   });
 }
 </script>
 
 <template>
+  <Shelf />
+  <UrlImport />
+
   <div class="card">
-    <h2>经典故事改写（书库快速充实）</h2>
+    <h2>经典故事改写（AI 按孩子的识字量重写）</h2>
     <p class="muted">成语、神话、寓言、童话、历史和科普的经典故事都是公版，由 AI 按孩子当前的识字量用自己的话重新讲一遍——没有版权顾虑，难度也正合适。排队后每天按 AI 额度自动处理（约 7–10 篇/天），也可在“书库”点“立即处理队列”。</p>
     <div class="row">
       <div style="flex: 1; min-width: 220px">

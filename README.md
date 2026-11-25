@@ -216,6 +216,35 @@ each in its own words at the child's level, aiming each story at different
 characters. Queued work is processed every 30 minutes within the daily AI
 budget (`ai_daily_calls`, ~7–10 articles a day by default).
 
+In the parent console (添加文章):
+
+- **公版名篇书架** — public-domain texts suited to grade 4 (`src/data/shelf.js`:
+  老舍《小坡的生日》, 夏丏尊译《爱的教育》, 许地山《落花生》, 萧红《祖父的园子》,
+  朱自清, 胡适, 鲁迅 …), fetched from zh.wikisource chapter by chapter.
+- **粘贴网址导入** — a story page the parent found (WeChat articles too),
+  for the family's own reading.
+
+Long texts are split into parts of about 1000 characters (`src/lib/split.js`)
+that are offered in order: part n only after the earlier parts are read.
+
+### Prepared articles (no AI wait)
+
+Every article normally waits for Workers AI (screening, glosses, questions).
+Articles can instead be prepared by hand — the same content, checked by the
+same validators — and are then ready a minute after import, whatever the AI
+quota says:
+
+```sh
+node scripts/prepare.mjs shelf xiaopo 1          # skeletons in data/prepared/ (never committed) + what to decide
+node scripts/prepare.mjs check data/prepared/x.json   # after editing a body: readings and gloss candidates again
+READHOUND_URL=https://<your-domain> PARENT_PIN=<parent pin> node scripts/import-prepared.mjs data/prepared/*.json
+```
+
+A prepared file holds the text plus `prepared`: `screen`, `polyphones`
+(`"<paragraph>:<han index>": reading`), `glosses`, `questions`, `skills` in
+the formats of the AI stages (`src/lib/ai.js`). The pipeline uses them in
+place of the model calls and processes prepared articles first.
+
 ## Deploy
 
 ```sh

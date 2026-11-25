@@ -4,7 +4,8 @@
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet } from "./db.js";
 import { normalise, paragraphs, articleMetrics, hardScreen, rankOf, CORE_RANK, MAX_RANK, VOLUME_END, LEVEL_ORDER, newCharsFor, charCounts, countHan } from "./lib/text.js";
 import { annotate, readingAt, readingOf, polyphonesIn, applyFixes } from "./lib/pinyin.js";
-import { screenArticle, glossChars, makeQuestions, makeSkills, tts, checkPolyphones, writeStory, rewriteStory, GENRES, isQuotaError, utcDay } from "./lib/ai.js";
+import { screenArticle, glossChars, makeQuestions, makeSkills, tts, checkPolyphones, writeStory, rewriteStory, GENRES, isQuotaError, utcDay,
+  validateScreen, validateGlosses, validateQuestions, validateSkills, NARRATIVE } from "./lib/ai.js";
 import { cnDate, addDays } from "./lib/logic.js";
 import { currentUnit } from "./curriculum.js";
 
@@ -15,7 +16,7 @@ const MAX_ATTEMPTS = 3;
 const GLOSS_CAP = 24;
 
 /** Queue a new article. Returns {id} or {duplicate}. */
-export async function enqueue(env, { title, body, genre, source, kind = "family_book" }) {
+export async function enqueue(env, { title, body, genre, source, kind = "family_book", series = null, part = null, prepared = null }) {
   title = normalise(String(title || "")).replace(/\n/g, " ").trim().slice(0, 80);
   body = normalise(body);
   if (!title || !body) throw new Error("标题和正文都不能为空");
@@ -26,13 +27,47 @@ export async function enqueue(env, { title, body, genre, source, kind = "family_
     await run(env, "INSERT OR IGNORE INTO sources (name, kind) VALUES (?, ?)", source, kind);
     sourceId = (await first(env, "SELECT id FROM sources WHERE name = ?", source)).id;
   }
-  const r = await run(env, "INSERT INTO articles (source_id, title, body, genre, status, stage) VALUES (?, ?, ?, ?, 'queued', 'metrics')", sourceId, title, body, genre || null);
+  const r = await run(env, "INSERT INTO articles (source_id, title, body, genre, status, stage, series, part, prepared) VALUES (?, ?, ?, ?, 'queued', 'metrics', ?, ?, ?)",
+    sourceId, title, body, genre || null, series, part, prepared ? JSON.stringify(prepared) : null);
   return { id: r.meta.last_row_id };
 }
 
-/** Next article with pending work (index: status). */
+/** Next article with pending work (index: status). Prepared ones first: they need no AI. */
 export async function nextPending(env) {
-  return first(env, "SELECT * FROM articles WHERE status IN ('queued','processing') ORDER BY id LIMIT 1");
+  return first(env, "SELECT * FROM articles WHERE status IN ('queued','processing') ORDER BY (prepared IS NULL), id LIMIT 1");
+}
+
+/**
+ * Hand-prepared content for a stage, if any (see scripts/prepare.mjs). The
+ * same validators as for model output apply, so it lands in the same shape.
+ */
+function preparedFor(a, stage) {
+  if (!a.prepared) return null;
+  try {
+    return JSON.parse(a.prepared)[stage] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Check a prepared block before it is queued (errors name the stage). */
+export function checkPrepared(body, genre, p) {
+  if (!p || typeof p !== "object") throw new Error("prepared: expected an object");
+  const at = (stage, fn) => {
+    if (p[stage] == null) return;
+    try { fn(p[stage]); } catch (e) { throw new Error(`prepared.${stage}: ${e.message}`); }
+  };
+  at("screen", (x) => validateScreen(x));
+  at("glosses", (x) => validateGlosses(x, body, x.map((g) => g.char)));
+  at("questions", (x) => validateQuestions(x, body));
+  at("skills", (x) => validateSkills(x, body, NARRATIVE.has(genre)));
+  at("polyphones", (x) => {
+    const paras = paragraphs(body);
+    for (const [k, v] of Object.entries(x)) {
+      const [pi, idx] = k.split(":").map(Number);
+      if (!paras[pi] || !(idx >= 0) || !/^[a-zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜü]+$/.test(v)) throw new Error(`bad entry ${k}=${v}`);
+    }
+  });
 }
 
 /** Run one stage of one article. Returns a short log line. */
@@ -61,12 +96,13 @@ export async function ingestCallsToday(env) {
 }
 
 export async function step(env, article) {
-  const paused = await aiPausedUntil(env);
-  if (paused) return `${PAUSED} ${PAUSE_TEXT[paused.reason]}，${paused.until} 后继续`;
   const a = article || (await nextPending(env));
   if (!a) return null;
   const stage = a.stage;
-  if (AI_STAGES.has(stage)) {
+  // a stage with hand-prepared content calls no model: no pause, no budget
+  if (AI_STAGES.has(stage) && preparedFor(a, stage) == null) {
+    const paused = await aiPausedUntil(env);
+    if (paused) return `${PAUSED} ${PAUSE_TEXT[paused.reason]}，${paused.until} 后继续`;
     const limit = (await getSettings(env)).ai_daily_calls;
     if (limit > 0 && (await ingestCallsToday(env)) >= limit) {
       const until = await pause(env, "budget");
@@ -163,7 +199,8 @@ const STAGE_FN = {
 
   async screen(env, a) {
     const s = await getSettings(env);
-    const r = await screenArticle(env, { title: a.title, body: a.body, interests: s.interests });
+    const p = preparedFor(a, "screen");
+    const r = p ? validateScreen(p) : await screenArticle(env, { title: a.title, body: a.body, interests: s.interests });
     await run(env, "UPDATE articles SET age_fit = ?, genre = COALESCE(genre, ?), tags = ?, ai_note = ?, reject_reason = ? WHERE id = ?",
       r.ageFit, r.genre, JSON.stringify(r.tags), r.note, r.ageFit === "flagged" ? `适龄性存疑：${r.reason}` : null, a.id);
   },
@@ -185,15 +222,27 @@ const STAGE_FN = {
     const items = [];
     paras.forEach((p, pi) => polyphonesIn(p).forEach((it) => items.push({ ...it, pi })));
     let fixed = 0;
-    // one model call per article; long articles: the first 60 occurrences
-    const picked = items.slice(0, 60);
-    const answers = await checkPolyphones(env, picked);
-    picked.forEach((it, i) => {
-      if (answers[i] && answers[i] !== py[it.pi][it.index]) {
-        py[it.pi][it.index] = answers[i];
-        fixed++;
+    const prepared = preparedFor(a, "polyphones");
+    if (prepared) {
+      // hand-checked readings: {"<paragraph>:<han index>": reading}
+      for (const [k, v] of Object.entries(prepared)) {
+        const [pi, idx] = k.split(":").map(Number);
+        if (py[pi] && idx < py[pi].length && py[pi][idx] !== v) {
+          py[pi][idx] = v;
+          fixed++;
+        }
       }
-    });
+    } else {
+      // one model call per article; long articles: the first 60 occurrences
+      const picked = items.slice(0, 60);
+      const answers = await checkPolyphones(env, picked);
+      picked.forEach((it, i) => {
+        if (answers[i] && answers[i] !== py[it.pi][it.index]) {
+          py[it.pi][it.index] = answers[i];
+          fixed++;
+        }
+      });
+    }
     const s = await getSettings(env);
     const out = paras.map((p, i) => applyFixes(p, py[i].join(" "), s.pinyin_fixes));
     await run(env, "UPDATE articles SET pinyin = ?, polyphones_fixed = ? WHERE id = ?", JSON.stringify(out), fixed, a.id);
@@ -207,6 +256,11 @@ const STAGE_FN = {
   },
 
   async glosses(env, a) {
+    const prepared = preparedFor(a, "glosses");
+    if (prepared) {
+      const chars = prepared.map((g) => g.char);
+      return storeGlosses(env, a, chars, validateGlosses(prepared, a.body, chars));
+    }
     const known = await knownSet(env);
     const chars = glossCandidates(a.uniq, known);
     await ensureGlosses(env, a, chars);
@@ -216,7 +270,8 @@ const STAGE_FN = {
     const known = await knownSet(env);
     const { teachable } = newCharsFor(a.uniq, known);
     const guessChars = (teachable.length ? teachable : glossCandidates(a.uniq, known)).slice(0, 8);
-    const q = await makeQuestions(env, { title: a.title, body: a.body, guessChars });
+    const p = preparedFor(a, "questions");
+    const q = p ? validateQuestions(p, a.body) : await makeQuestions(env, { title: a.title, body: a.body, guessChars });
     const list = [...q.questions];
     if (q.guess) list.push(q.guess);
     await run(env, "DELETE FROM questions WHERE article_id = ? AND kind IN ('choice','guess')", a.id);
@@ -228,7 +283,8 @@ const STAGE_FN = {
 
   /** Phase-2 skills: prediction (stories only), evidence sentence, section summaries. */
   async skills(env, a) {
-    const list = await makeSkills(env, { title: a.title, body: a.body, genre: a.genre });
+    const p = preparedFor(a, "skills");
+    const list = p ? validateSkills(p, a.body, NARRATIVE.has(a.genre)) : await makeSkills(env, { title: a.title, body: a.body, genre: a.genre });
     await run(env, "DELETE FROM questions WHERE article_id = ? AND kind IN ('predict','locate','section','retell')", a.id);
     await batch(env, list.map((x, i) => stmt(env,
       "INSERT INTO questions (article_id, ord, kind, ability, prompt, options, answer, evidence, explain, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -335,9 +391,13 @@ export async function ensureGlosses(env, a, chars) {
   const have = new Set((await all(env, "SELECT char FROM glosses WHERE article_id = ? AND gloss IS NOT NULL", a.id)).map((r) => r.char));
   const missing = chars.filter((c) => !have.has(c));
   if (!missing.length) return;
-  const out = await glossChars(env, { title: a.title, body: a.body, chars: missing });
+  await storeGlosses(env, a, missing, await glossChars(env, { title: a.title, body: a.body, chars: missing }));
+}
+
+/** Gloss rows for `chars` (a card without a gloss for any the list misses), pinyin read in context. */
+async function storeGlosses(env, a, chars, out) {
   const byChar = new Map(out.map((g) => [g.char, g]));
-  const rows = missing.map((ch) => {
+  const rows = chars.map((ch) => {
     const g = byChar.get(ch) || { char: ch, word: ch, gloss: null, example: null };
     const at = a.body.indexOf(g.word);
     const idx = at >= 0 ? at + [...g.word].indexOf(ch) : a.body.indexOf(ch);

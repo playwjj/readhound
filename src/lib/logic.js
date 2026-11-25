@@ -61,6 +61,11 @@ export function rankCandidates(candidates, ctx) {
         reasons.push(`配合课本：${unit.theme}`);
       }
     }
+    // the next part of a story already begun: keep the thread going
+    if (c.continues) {
+      score += 12;
+      reasons.push("接着读上一篇的后续");
+    }
     if (c.charCount >= 600 && c.charCount <= 900) score += 5;
     score -= (c.difficulty || 0) * 0.1;
     out.push({ ...c, newCount: n, newChars: teachable, tier: newTier(n), score: round(score, 1), reason: reasons.join("，") });

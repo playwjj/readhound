@@ -1,11 +1,14 @@
 // Parent-facing API: report, library review, ingestion, settings,
 // textbook lists, monthly passport, reward redemption.
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet, DEFAULT_SETTINGS } from "./db.js";
-import { enqueue, step, nextPending, requeue, reapplyFix, enqueueGenerated, aiPausedUntil, PAUSED, INGEST_PURPOSES, ingestCallsToday } from "./pipeline.js";
-import { paragraphs, isHan, newCharsFor, newTier } from "./lib/text.js";
+import { enqueue, step, nextPending, requeue, reapplyFix, enqueueGenerated, aiPausedUntil, PAUSED, INGEST_PURPOSES, ingestCallsToday, checkPrepared } from "./pipeline.js";
+import { paragraphs, isHan, newCharsFor, newTier, normalise } from "./lib/text.js";
 import { cnDate, addDays, levelReached } from "./lib/logic.js";
 import { ABILITY_NAMES, GENRE_NAMES, GENRES, utcDay } from "./lib/ai.js";
 import { CLASSICS } from "./data/classics.js";
+import { SHELF } from "./data/shelf.js";
+import { splitLong, partLabel } from "./lib/split.js";
+import { decode, extract, hanCount } from "./lib/extract.js";
 import { HttpError, safeJSON, snapshot, streakInfo } from "./child.js";
 
 // ---------------------------------------------------------------- report
@@ -161,29 +164,164 @@ export async function bulkAdd(env, { text, source, genre }) {
   return { results };
 }
 
-/** Public-domain import from zh.wikisource (one page; simplified variant). */
-export async function importWikisource(env, { title, genre }) {
-  title = String(title || "").trim();
-  if (!title) throw new HttpError(400, "请输入维基文库页面标题");
-  const url = `https://zh.wikisource.org/w/api.php?action=parse&format=json&formatversion=2&prop=text&disablelimitreport=1&variant=zh-cn&redirects=1&page=${encodeURIComponent(title)}`;
+/** One zh.wikisource page as plain text (traditional is converted at enqueue). */
+async function wikisourceText(title) {
+  const url = `https://zh.wikisource.org/w/api.php?action=parse&format=json&formatversion=2&prop=text&disablelimitreport=1&redirects=1&page=${encodeURIComponent(title)}`;
   const res = await fetch(url, { headers: { "user-agent": "ReadHound/0.1 (family reading app; low-frequency)" } });
-  if (!res.ok) throw new HttpError(502, `维基文库返回 ${res.status}`);
+  if (!res.ok) throw new HttpError(502, `维基文库返回 ${res.status}，稍后再试`);
   const data = await res.json();
   if (data.error) throw new HttpError(404, `找不到页面：${data.error.info || title}`);
   const text = wikiHtmlToText(data.parse.text);
   if (!text) throw new HttpError(422, "页面里没有可用的正文");
-  return enqueue(env, { title: data.parse.title || title, body: text, genre: GENRES.includes(genre) ? genre : null, source: "维基文库", kind: "public_domain" });
+  return { title: data.parse.title || title, text };
+}
+
+/**
+ * Queue a text: whole when it fits one sitting, else as parts read in order
+ * (part = base + 1, 2, 3 …; a later part is offered after the earlier ones are read).
+ */
+async function enqueueParts(env, { title, text, genre, source, kind, series = null, base = 0 }) {
+  const parts = splitLong(text);
+  if (parts.length === 1 && !series) return [{ title, ...(await enqueue(env, { title, body: text, genre, source, kind })) }];
+  const out = [];
+  for (const [i, body] of parts.entries()) {
+    const t = parts.length > 1 ? `${title}（${partLabel(i)}）` : title;
+    out.push({ title: t, ...(await enqueue(env, { title: t, body, genre, source, kind, series: series || `text:${title}`, part: base + i + 1 })) });
+  }
+  return out;
+}
+
+/** Public-domain import from zh.wikisource (one page; long pages become parts). */
+export async function importWikisource(env, { title, genre }) {
+  title = String(title || "").trim();
+  if (!title) throw new HttpError(400, "请输入维基文库页面标题");
+  const page = await wikisourceText(title);
+  const results = await enqueueParts(env, { title: page.title.replace(/\s*\(.*\)$/, ""), text: page.text, genre: GENRES.includes(genre) ? genre : null, source: "维基文库", kind: "public_domain" });
+  return { ...results[0], parts: results };
+}
+
+/**
+ * An article prepared by hand (scripts/prepare.mjs): questions, glosses and
+ * the rest come with it, so the pipeline runs without any AI call.
+ */
+export async function addPrepared(env, b) {
+  const body = normalise(String(b.body || ""));
+  const genre = GENRES.includes(b.genre) ? b.genre : null;
+  try {
+    checkPrepared(body, genre, b.prepared);
+  } catch (e) {
+    throw new HttpError(422, e.message);
+  }
+  const series = b.series ? String(b.series).slice(0, 80) : null;
+  const part = Number.isInteger(b.part) ? b.part : null;
+  return enqueue(env, { title: b.title, body, genre, source: b.source || "家长准备", kind: "public_domain", series, part, prepared: b.prepared });
+}
+
+// ---------------------------------------------------------------- 公版名篇书架
+/** The shelf, with how much of each text is already in the library. */
+export async function shelfList(env) {
+  const rows = await all(env, `SELECT series, COUNT(*) n, SUM(status = 'ready') ready, MAX(part) maxPart
+    FROM articles WHERE series LIKE 'shelf:%' GROUP BY series`);
+  const by = new Map(rows.map((r) => [r.series, r]));
+  return {
+    items: SHELF.map((it) => {
+      const r = by.get(`shelf:${it.key}`);
+      return {
+        key: it.key, title: it.title, author: it.author, genre: it.genre, fit: it.fit, note: it.note,
+        pages: it.pages.length, articles: r?.n || 0, ready: r?.ready || 0,
+        // pages already fetched (part = page index × 100 + n)
+        pagesDone: r ? Math.floor(r.maxPart / 100) + 1 : 0,
+      };
+    }),
+  };
+}
+
+/** Import one page of a shelf item (the parent console steps through the pages). */
+export async function shelfImport(env, { key, page = 0 }) {
+  const it = SHELF.find((x) => x.key === key);
+  if (!it) throw new HttpError(404, "书架上没有这一项");
+  page = Math.max(0, Math.min(Number(page) || 0, it.pages.length - 1));
+  const p = await wikisourceText(it.pages[page]);
+  const chapter = it.pages.length > 1 ? `${it.title.replace(/（.*）$/, "")}·${p.title.split("/").pop()}` : it.title;
+  const results = await enqueueParts(env, {
+    title: chapter, text: p.text, genre: it.genre, source: `维基文库 · ${it.author}`, kind: "public_domain",
+    series: `shelf:${it.key}`, base: page * 100,
+  });
+  return { page, pages: it.pages.length, next: page + 1 < it.pages.length ? page + 1 : null, added: results.filter((r) => r.id).length, results };
+}
+
+// ---------------------------------------------------------------- 网页导入
+/** A story page the parent found (private family reading); long ones become parts. */
+export async function importUrl(env, { url, genre }) {
+  let u;
+  try {
+    u = new URL(String(url || "").trim());
+  } catch {
+    throw new HttpError(400, "这不是一个网址");
+  }
+  if (!/^https?:$/.test(u.protocol)) throw new HttpError(400, "只支持 http / https 网址");
+  // a wikisource page: its own clean import
+  const ws = /(^|\.)wikisource\.org$/.test(u.hostname) && u.pathname.match(/^\/(?:wiki|zh-[a-z]+)\/(.+)$/);
+  if (ws) {
+    const page = await wikisourceText(decodeURIComponent(ws[1]).replace(/_/g, " "));
+    const parts = await enqueueParts(env, { title: page.title.replace(/\s*\(.*\)$/, ""), text: page.text, genre: GENRES.includes(genre) ? genre : null, source: "维基文库", kind: "public_domain" });
+    return { title: page.title, chars: hanCount(page.text), parts };
+  }
+  let res;
+  try {
+    res = await fetch(u, { headers: { "user-agent": "Mozilla/5.0 (family reading app; low-frequency)", accept: "text/html,*/*" }, redirect: "follow", signal: AbortSignal.timeout(15000) });
+  } catch {
+    throw new HttpError(502, "打不开这个网址（网站没有响应）");
+  }
+  if (!res.ok) throw new HttpError(502, `网站返回 ${res.status}：可能不让程序访问。可以把正文复制到“录入一篇”`);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  if (buf.length > 3_000_000) throw new HttpError(413, "网页太大了");
+  const { title, body } = extract(decode(buf, res.headers.get("content-type") || ""));
+  const n = hanCount(body);
+  if (n < 200) throw new HttpError(422, `只找到 ${n} 个汉字，不像一篇文章。可以把正文复制到“录入一篇”`);
+  if (n > 20000) throw new HttpError(422, `正文有 ${n} 字，太长了：请挑其中一章的网址`);
+  const results = await enqueueParts(env, { title: title || u.hostname, text: body, genre: GENRES.includes(genre) ? genre : null, source: u.hostname, kind: "web" });
+  return { title: title || u.hostname, chars: n, parts: results };
+}
+
+/**
+ * Remove whole <div> blocks (nested divs included) whose opening tag matches
+ * `test`: wikisource's header box, notes, licence and navigation.
+ */
+function dropDivs(html, test) {
+  let out = "", i = 0;
+  const open = /<div\b[^>]*>/gi;
+  for (let m; (m = open.exec(html)); ) {
+    if (!test(m[0])) continue;
+    // find the matching </div>
+    const tag = /<(\/?)div\b[^>]*>/gi;
+    tag.lastIndex = m.index + m[0].length;
+    let depth = 1, t;
+    while (depth && (t = tag.exec(html))) depth += t[1] ? -1 : 1;
+    const end = t ? t.index + t[0].length : html.length;
+    out += html.slice(i, m.index);
+    i = end;
+    open.lastIndex = end;
+  }
+  return out + html.slice(i);
 }
 
 export function wikiHtmlToText(html) {
-  let s = String(html)
-    .replace(/<(style|script|table|sup|noscript)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<div[^>]*class="[^"]*(?:noprint|header|navbox|licenseContainer|ws-noexport)[^"]*"[\s\S]*?<\/div>/gi, "")
+  const boiler = /id="(?:headerContainer|plainSister)"|class="[^"]*\b(?:noprint|ws-noexport|licenseContainer|licenseBanner|navbox|wst-|ws-header|mw-references|reflist)|align="left"/i;
+  let s = dropDivs(String(html), (tag) => boiler.test(tag))
+    .replace(/<(style|script|table|sup|noscript|ul)[\s\S]*?<\/\1>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|h\d|li|dd|dt)>/gi, "\n")
     .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&amp;/g, "&");
-  const paras = s.split("\n").map((p) => p.trim()).filter((p) => p && [...p].some(isHan));
+    .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&amp;/g, "&")
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/\[编辑\]|\[編輯\]/g, "");
+  const paras = s.split("\n").map((p) => p.replace(/^[\s\u00a0\u3000]+|[\s\u00a0\u3000]+$/g, ""))
+    // section numbers and the table-of-contents heading are not text
+    .filter((p) => p && [...p].some(isHan) && !/^(目[录錄]|[一二三四五六七八九十]+)$/.test(p));
   return paras.join("\n");
 }
 
@@ -274,8 +412,10 @@ export async function queueClassics(env, { category, count }) {
   return { queued: picks, ids: queued };
 }
 
-export async function pipelineStep(env) {
-  const line = await step(env);
+/** One pipeline step; {id}: a step of that article only (nothing if it is not pending). */
+export async function pipelineStep(env, { id } = {}) {
+  const only = id ? await first(env, "SELECT * FROM articles WHERE id = ? AND status IN ('queued','processing')", Number(id)) : null;
+  const line = id ? (only ? await step(env, only) : null) : await step(env);
   const pending = await first(env, "SELECT COUNT(*) n FROM articles WHERE status IN ('queued','processing')");
   return { log: line, pending: pending.n, paused: !!line && line.startsWith(PAUSED) };
 }

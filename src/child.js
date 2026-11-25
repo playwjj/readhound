@@ -66,10 +66,18 @@ export async function streakInfo(env, today, settings) {
 
 // ================================================================ daily pick
 async function candidatePool(env, excludeIds) {
-  const rows = await all(env, "SELECT id, title, uniq, difficulty, genre, tags, char_count FROM articles WHERE status = 'ready' ORDER BY difficulty LIMIT 400");
+  // a part of a long text is offered once every earlier part (still in play) has been read
+  const rows = await all(env, `SELECT a.id, a.title, a.uniq, a.difficulty, a.genre, a.tags, a.char_count, a.series, a.part,
+      EXISTS (SELECT 1 FROM articles e WHERE e.series = a.series AND e.part < a.part) AS continues
+    FROM articles a
+    WHERE a.status = 'ready' AND (a.series IS NULL OR NOT EXISTS (
+      SELECT 1 FROM articles e WHERE e.series = a.series AND e.part < a.part
+        AND e.status IN ('ready','queued','processing')
+        AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.article_id = e.id AND s.level >= 2)))
+    ORDER BY a.difficulty LIMIT 400`);
   return rows
     .filter((r) => !excludeIds.has(r.id))
-    .map((r) => ({ id: r.id, title: r.title, uniq: r.uniq, difficulty: r.difficulty, genre: r.genre, tags: safeJSON(r.tags, []), charCount: r.char_count }));
+    .map((r) => ({ id: r.id, title: r.title, uniq: r.uniq, difficulty: r.difficulty, genre: r.genre, tags: safeJSON(r.tags, []), charCount: r.char_count, continues: !!r.continues }));
 }
 
 async function pickContext(env, today, settings) {

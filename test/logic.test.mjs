@@ -400,3 +400,41 @@ test("import: web page extraction keeps the story paragraphs, drops boilerplate"
   assert.equal(r.body.split("\n").length, 2);
   assert.ok(!r.body.includes("上一篇"));
 });
+
+import { splitLong } from "../src/lib/split.js";
+test("split: long texts become parts of about 1000 chars at paragraph ends; short ones stay whole", () => {
+  const para = (n) => "字".repeat(n - 1) + "。";
+  assert.equal(splitLong(para(700)).length, 1);
+  const text = Array.from({ length: 38 }, (_, i) => para(60 + ((i * 37) % 90))).join("\n");
+  const parts = splitLong(text);
+  assert.ok(parts.length >= 3 && parts.length <= 5);
+  for (const p of parts) assert.ok(p.replace(/\n/g, "").length <= 1600 && p.replace(/\n/g, "").length >= 350);
+  assert.equal(parts.join("\n"), text); // nothing lost, order kept
+  // one huge paragraph is cut at sentence ends
+  const big = Array.from({ length: 200 }, () => "小坡跑到海边去看大船。").join("");
+  assert.ok(splitLong(big).length >= 2);
+});
+
+test("wikisource: header box, notes and sister links are not part of the text", () => {
+  const html = `<div class="mw-parser-output"><div align="left"><small>更多资料：<a>春</a></small></div><div id="headerContainer"><table><tr><td>落花生 作者：許地山</td></tr></table>
+    <div class="x">署名「落華生」發表<ul id="plainSister"><li>姊妹计划: 数据项</li></ul></div></div>
+    <p>&#8203;我們屋後有半畝隙地。母親說：「讓他荒蕪着怪可惜。」</p><p>&#160;一</p><p>目录</p><p>爹爹說：「這是我對於你們底希望。」</p></div>`;
+  const t = wikiHtmlToText(html);
+  assert.equal(t, "我們屋後有半畝隙地。母親說：「讓他荒蕪着怪可惜。」\n爹爹說：「這是我對於你們底希望。」");
+});
+
+import { extract as extractPage } from "../src/lib/extract.js";
+test("import: WeChat articles read from #js_content", () => {
+  const html = `<html><head><meta property="og:title" content="小猫钓鱼"></head><body><div id="js_content"><section><span>猫妈妈带着小猫在河边钓鱼。一只蜻蜓飞来了，小猫放下鱼竿就去捉蜻蜓。</span></section>
+    <section>蜻蜓飞走了，小猫空着手回到河边，看见猫妈妈钓到了一条大鱼。</section><section>点击关注我们的公众号</section></div><script>var x=1;</script></body></html>`;
+  const r = extractPage(html);
+  assert.equal(r.title, "小猫钓鱼");
+  assert.equal(r.body.split("\n").length, 2);
+});
+
+test("pick: the next part of a story already begun ranks first among equals", () => {
+  const ctx = { known: new Set("小猫在河边钓鱼"), due: new Set(), upcoming: new Set(), recentGenres: [], targetNew: 2 };
+  const base = { uniq: "小猫在河边钓鱼蜻蜓", difficulty: 20, genre: "story", tags: [], charCount: 800 };
+  const r = rankCandidates([{ ...base, id: 1, title: "甲" }, { ...base, id: 2, title: "乙（二）", continues: true }], ctx);
+  assert.equal(r[0].id, 2);
+});

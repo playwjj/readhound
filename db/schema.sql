@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS articles (
   audio             TEXT,                -- JSON array: R2 key per paragraph (null = use device voice)
   purpose           TEXT,                -- 带着问题读: the pre-reading observation task
   gen_spec          TEXT,                -- JSON: AI-generated story spec + generation report (null = real material)
+  series            TEXT,                -- a long text split into parts: the book / text it belongs to
+  part              INTEGER,             -- 1, 2, 3 … in reading order (part n is offered after part n-1 is read)
+  prepared          TEXT,                -- JSON: hand-made screen/polyphones/glosses/questions/skills (no AI for those stages)
   status            TEXT NOT NULL DEFAULT 'queued', -- queued | processing | flagged | ready | rejected | retired
   stage             TEXT NOT NULL DEFAULT 'metrics', -- next pipeline stage
   attempts          INTEGER NOT NULL DEFAULT 0,
@@ -52,6 +55,7 @@ CREATE TABLE IF NOT EXISTS articles (
 );
 CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status, difficulty);
 CREATE INDEX IF NOT EXISTS idx_articles_title ON articles(title);
+CREATE INDEX IF NOT EXISTS idx_articles_series ON articles(series, part);
 
 -- Context glosses for characters of an article (word as used in the text).
 CREATE TABLE IF NOT EXISTS glosses (

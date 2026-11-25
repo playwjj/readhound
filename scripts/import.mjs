@@ -30,30 +30,8 @@ async function call(method, path, body) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const han = (s) => (String(s).match(/\p{Script=Han}/gu) || []).length;
 
-// ---------------------------------------------------------------- web page → title + paragraphs
-function decode(buf, contentType) {
-  const head = new TextDecoder("latin1").decode(buf.slice(0, 4096));
-  const cs = (contentType.match(/charset=([\w-]+)/i) || head.match(/charset=["']?([\w-]+)/i) || [])[1] || "utf-8";
-  try { return new TextDecoder(cs.toLowerCase().replace(/^gb2312$/, "gbk")).decode(buf); } catch { return new TextDecoder("utf-8").decode(buf); }
-}
-const entities = (s) => s.replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n)).replace(/&amp;/g, "&");
-const strip = (s) => entities(s.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")).replace(/[ \t　]+/g, " ").trim();
-
-export function extract(html) {
-  const clean = html.replace(/<(script|style|noscript|nav|header|footer|aside|form|iframe)[\s\S]*?<\/\1>/gi, "");
-  const title = strip((clean.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || clean.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "")
-    .split(/[_|\-–—]/)[0].trim().slice(0, 40);
-  // paragraphs: <p> blocks with real Chinese text; boilerplate lines are short
-  let paras = [...clean.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => strip(m[1])).flatMap((p) => p.split("\n")).map((p) => p.trim());
-  if (han(paras.join("")) < 200) {
-    // little <p> structure: the block with the most Chinese text, if it has more
-    const blocks = [...clean.matchAll(/<(div|td|article|section)[^>]*>([\s\S]*?)<\/\1>/gi)].map((m) => strip(m[2]));
-    const best = blocks.sort((a, b) => han(b) - han(a))[0] || "";
-    if (han(best) > han(paras.join(""))) paras = best.split("\n").map((p) => p.trim());
-  }
-  paras = paras.filter((p) => han(p) >= 8 && !/版权|copyright|上一篇|下一篇|责任编辑|扫码|关注|阅读全文|点击/i.test(p));
-  return { title, body: paras.join("\n") };
-}
+import { decode, extract } from "../src/lib/extract.js";
+export { extract };
 
 async function importUrls(file) {
   const urls = readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));

@@ -50,6 +50,7 @@ const routes = [
   ["POST", /^\/api\/parent\/articles\/(\d+)\/(approve|retire|requeue|force|pick|delete)$/, "parent", (env, ctx, m) => parent.articleAction(env, Number(m[1]), m[2])],
   ["POST", /^\/api\/parent\/import\/wikisource$/, "parent", async (env, ctx, m, req) => parent.importWikisource(env, await body(req))],
   ["POST", /^\/api\/parent\/pipeline\/step$/, "parent", (env) => parent.pipelineStep(env)],
+  ["GET", /^\/api\/parent\/ai-usage$/, "parent", (env) => parent.aiUsage(env)],
   ["POST", /^\/api\/parent\/generate$/, "parent", async (env, ctx, m, req) => parent.generate(env, await body(req))],
   ["GET", /^\/api\/parent\/settings$/, "parent", (env) => parent.getParentSettings(env)],
   ["PUT", /^\/api\/parent\/settings$/, "parent", async (env, ctx, m, req) => parent.putSettings(env, await body(req))],

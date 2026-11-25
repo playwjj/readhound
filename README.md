@@ -127,7 +127,10 @@ practice). The pre-reading task comes in one object with its question.
 **Workers AI budget.** The free plan gives 10,000 neurons a day per
 account. When it runs out (error 4006) the pipeline pauses until 00:00
 UTC instead of failing articles; the parent console shows a banner and
-retelling tells the child to try tomorrow.
+retelling tells the child to try tomorrow. Every call is metered per UTC
+day and purpose (report tab → AI 用量); the ingest pipeline has its own
+daily call limit (`ai_daily_calls`, default 60 ≈ 10 articles) so the rest
+of the allocation stays for the child's live features.
 
 ## Development
 

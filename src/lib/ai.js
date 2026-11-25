@@ -25,8 +25,24 @@ export function isQuotaError(e) {
   return /\b4006\b|daily free allocation|neurons/i.test(String(e?.message || e));
 }
 
+/** UTC day: the Workers AI allocation resets at 00:00 UTC. */
+export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);
+
+/** Record one model call (best effort: accounting must never break a call). */
+export async function meter(env, purpose, inChars, outChars, failed = false) {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare(`INSERT INTO ai_usage (day, purpose, calls, in_chars, out_chars, failures) VALUES (?, ?, 1, ?, ?, ?)
+      ON CONFLICT(day, purpose) DO UPDATE SET calls = calls + 1, in_chars = in_chars + excluded.in_chars,
+        out_chars = out_chars + excluded.out_chars, failures = failures + excluded.failures`)
+      .bind(utcDay(), purpose, inChars | 0, outChars | 0, failed ? 1 : 0).run();
+  } catch (e) {
+    console.warn("[ai] meter failed", e?.message);
+  }
+}
+
 // ------------------------------------------------------------------ chat
-export async function chat(env, prompt, { maxTokens = 1500, temperature = 0.4, retries = 1 } = {}) {
+export async function chat(env, prompt, { maxTokens = 1500, temperature = 0.4, retries = 1, purpose = "other" } = {}) {
   const model = env.AI_MODEL || DEFAULT_MODEL;
   const body = {
     messages: [
@@ -47,8 +63,10 @@ export async function chat(env, prompt, { maxTokens = 1500, temperature = 0.4, r
         : String(stream?.response ?? stream?.choices?.[0]?.message?.content ?? "")
       ).replace(/<think>[\s\S]*?<\/think>/g, "").trim();
       if (!text) throw new Error(`empty response from ${model}`);
+      await meter(env, purpose, prompt.length, text.length);
       return text;
     } catch (e) {
+      await meter(env, purpose, prompt.length, 0, true);
       if (isQuotaError(e)) throw e; // retrying only burns time
       lastErr = e;
       console.warn(`[ai] ${model} attempt ${attempt + 1} failed:`, e && (e.stack || e.message || String(e)));
@@ -150,8 +168,8 @@ export function validateScreen(o) {
 }
 
 export async function screenArticle(env, { title, body, interests }) {
-  if (env.AI_MOCK === "1") return { ageFit: "ok", reason: "", genre: "story", tags: ["模拟"], note: "（模拟评估）" };
-  return generate(env, screenPrompt(title, body, interests), validateScreen, { maxTokens: 300 });
+  if (env.AI_MOCK === "1") return meter(env, "screen", 0, 0).then(() => ({ ageFit: "ok", reason: "", genre: "story", tags: ["模拟"], note: "（模拟评估）" }));
+  return generate(env, screenPrompt(title, body, interests), validateScreen, { maxTokens: 300, purpose: "screen" });
 }
 
 // ------------------------------------------------------------------ glosses
@@ -193,6 +211,7 @@ export function validateGlosses(arr, body, chars) {
 export async function glossChars(env, { title, body, chars }) {
   if (!chars.length) return [];
   if (env.AI_MOCK === "1") {
+    await meter(env, "glosses", 0, 0);
     return chars.map((ch) => {
       const i = body.indexOf(ch);
       const next = body[i + 1];
@@ -200,7 +219,7 @@ export async function glossChars(env, { title, body, chars }) {
       return { char: ch, word, gloss: `“${ch}”的意思（模拟释义）`, example: `这是含有“${ch}”的例句。` };
     });
   }
-  return generate(env, glossPrompt(title, body, chars), (o) => validateGlosses(o, body, chars), { maxTokens: 120 + chars.length * 70 });
+  return generate(env, glossPrompt(title, body, chars), (o) => validateGlosses(o, body, chars), { maxTokens: 120 + chars.length * 70, purpose: "glosses" });
 }
 
 // ------------------------------------------------------------------ questions
@@ -278,8 +297,8 @@ export function placeChoice(right, wrongs, seed, where = "choice") {
 }
 
 export async function makeQuestions(env, { title, body, guessChars }) {
-  if (env.AI_MOCK === "1") return mockQuestions(body, guessChars);
-  return generate(env, questionPrompt(title, body, guessChars), (o) => validateQuestions(o, body), { maxTokens: 1600 });
+  if (env.AI_MOCK === "1") return meter(env, "questions", 0, 0).then(() => mockQuestions(body, guessChars));
+  return generate(env, questionPrompt(title, body, guessChars), (o) => validateQuestions(o, body), { maxTokens: 1600, purpose: "questions" });
 }
 
 function mockQuestions(body, guessChars) {
@@ -376,8 +395,8 @@ export function validateSkills(o, body, narrative) {
 
 export async function makeSkills(env, { title, body, genre }) {
   const narrative = NARRATIVE.has(genre);
-  if (env.AI_MOCK === "1") return mockSkills(body, narrative);
-  return generate(env, skillsPrompt(title, body, narrative), (o) => validateSkills(o, body, narrative), { maxTokens: 1500 });
+  if (env.AI_MOCK === "1") return meter(env, "skills", 0, 0).then(() => mockSkills(body, narrative));
+  return generate(env, skillsPrompt(title, body, narrative), (o) => validateSkills(o, body, narrative), { maxTokens: 1500, purpose: "skills" });
 }
 
 function mockSkills(body, narrative) {
@@ -442,17 +461,18 @@ export function parseStory(text) {
 }
 
 export async function writeStory(env, spec) {
-  if (env.AI_MOCK === "1") return mockStory(spec);
-  return parseStory(await chat(env, storyPrompt(spec), { maxTokens: 2200, temperature: 0.8 }));
+  if (env.AI_MOCK === "1") return meter(env, "story", 0, 0).then(() => mockStory(spec));
+  return parseStory(await chat(env, storyPrompt(spec), { maxTokens: 2200, temperature: 0.8, purpose: "story" }));
 }
 
 export async function rewriteStory(env, story, hardChars, len) {
   if (env.AI_MOCK === "1") {
+    await meter(env, "story", 0, 0);
     // mock: drop the offending characters
     const strip = (t) => [...t].filter((c) => !hardChars.includes(c)).join("");
     return { title: story.title, body: strip(story.body) };
   }
-  return parseStory(await chat(env, rewritePrompt(story.title, story.body, hardChars, len), { maxTokens: 2200, temperature: 0.4 }));
+  return parseStory(await chat(env, rewritePrompt(story.title, story.body, hardChars, len), { maxTokens: 2200, temperature: 0.4, purpose: "story" }));
 }
 
 function mockStory(spec) {
@@ -473,7 +493,7 @@ function mockStory(spec) {
 // ------------------------------------------------------------------ retelling (live, once or twice a day)
 /** Speech → simplified text. Whisper writes traditional characters; normalise. */
 export async function transcribe(env, bytes) {
-  if (env.AI_MOCK === "1") return "（模拟转写）我讲了要点一、要点二，还有要点三。";
+  if (env.AI_MOCK === "1") return meter(env, "stt", 0, 0).then(() => "（模拟转写）我讲了要点一、要点二，还有要点三。");
   const models = [env.STT_MODEL || "@cf/openai/whisper", "@cf/openai/whisper-large-v3-turbo"];
   let lastErr;
   for (const model of [...new Set(models)]) {
@@ -485,8 +505,11 @@ export async function transcribe(env, bytes) {
         input = { audio: btoa(bin), language: "zh" };
       } else input = { audio: [...bytes] };
       const r = await env.AI.run(model, input);
-      return normalise(String(r?.text || "")).replace(/\n/g, "");
+      const text = normalise(String(r?.text || "")).replace(/\n/g, "");
+      await meter(env, "stt", bytes.length, text.length);
+      return text;
     } catch (e) {
+      await meter(env, "stt", bytes.length, 0, true);
       if (isQuotaError(e)) throw e;
       lastErr = e;
       console.warn(`[stt] ${model} failed:`, e?.message || e);
@@ -515,8 +538,8 @@ export function validateRetell(o, points) {
 }
 
 export async function assessRetell(env, { title, points, transcript }) {
-  if (env.AI_MOCK === "1") return { covered: points.slice(), feedback: "（模拟）讲得很完整！", tip: "" };
-  return generate(env, retellPrompt(title, points, transcript), (o) => validateRetell(o, points), { maxTokens: 400, temperature: 0.2 });
+  if (env.AI_MOCK === "1") return meter(env, "retell", 0, 0).then(() => ({ covered: points.slice(), feedback: "（模拟）讲得很完整！", tip: "" }));
+  return generate(env, retellPrompt(title, points, transcript), (o) => validateRetell(o, points), { maxTokens: 400, temperature: 0.2, purpose: "retell" });
 }
 
 // ------------------------------------------------------------------ polyphones
@@ -548,8 +571,9 @@ export function validatePolyphones(o, items) {
 }
 
 export async function checkPolyphones(env, items) {
-  if (!items.length || env.AI_MOCK === "1") return {};
-  return generate(env, polyphonePrompt(items), (o) => validatePolyphones(o, items), { maxTokens: 60 + items.length * 14, temperature: 0.1 });
+  if (!items.length) return {};
+  if (env.AI_MOCK === "1") return meter(env, "polyphones", 0, 0).then(() => ({}));
+  return generate(env, polyphonePrompt(items), (o) => validatePolyphones(o, items), { maxTokens: 60 + items.length * 14, temperature: 0.1, purpose: "polyphones" });
 }
 
 // ------------------------------------------------------------------ TTS

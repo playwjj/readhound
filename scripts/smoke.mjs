@@ -169,4 +169,18 @@ const after = (await call("parent", "GET", "/api/parent/articles")).articles;
 const autos = after.filter((a) => a.id > G.id);
 ok(after.length === before + 1 && autos.length === 1, `cron queued exactly one 补位 story (#${autos[0]?.id} ${autos[0]?.status})`);
 
+console.log("AI budget");
+const U = await call("parent", "GET", "/api/parent/ai-usage");
+ok(U.ingestToday > 0 && U.rows.some((r) => r.purpose === "retell"), `usage metered: ${U.ingestToday} ingest calls today, retell/stt counted apart`);
+await call("parent", "PUT", "/api/parent/settings", { ai_daily_calls: 1 });
+await call("parent", "POST", "/api/parent/articles", { title: "预算测试", body: readFileSync(new URL("xiaolieqi-zhaozi.txt", dir), "utf8").replace(/阿嗅/g, "阿黄"), source: "smoke" });
+let paused = null;
+for (let i = 0; i < 10; i++) { const r = await call("parent", "POST", "/api/parent/pipeline/step"); if (r.paused) { paused = r; break; } }
+ok(paused && /上限/.test(paused.log), `over the daily limit the pipeline pauses: ${paused?.log}`);
+const queued = (await call("parent", "GET", "/api/parent/articles?status=processing")).articles.find((a) => a.title === "预算测试");
+ok(queued && queued.status === "processing", "the article waits (not rejected)");
+await call("parent", "PUT", "/api/parent/settings", { ai_daily_calls: 0 });
+for (let i = 0; i < 30; i++) { const r = await call("parent", "POST", "/api/parent/pipeline/step"); if (!r.pending) break; }
+ok((await call("parent", "GET", "/api/parent/articles?status=ready")).articles.some((a) => a.title === "预算测试"), "lifting the limit resumes the pipeline");
+
 console.log("\nALL GOOD");

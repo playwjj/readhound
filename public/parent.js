@@ -123,6 +123,7 @@ function lineChart(rows) {
 const VIEWS = {
   async report() {
     const r = await api("GET", "/api/parent/report");
+    const u = await api("GET", "/api/parent/ai-usage");
     const last = r.curve[r.curve.length - 1];
     return h("div", {},
       h("div", { class: "kpi" },
@@ -138,6 +139,7 @@ const VIEWS = {
           r.assessment ? h("p", { class: "muted", style: "font-size:14px" }, `测评估计：${r.assessment.estimate} 字，约到统编版${r.assessment.reached}（${r.assessment.at.slice(0, 10)}）`) : null,
           h("h3", {}, `本月新驯服 ${r.newMastered.length} 个`),
           h("div", { class: "chars-inline" }, r.newMastered.map((c) => c.char).join("") || "—"))),
+      aiUsageCard(u),
       h("div", { class: "card" }, h("h2", {}, "阅读履历"),
         r.history.length ? h("table", {},
           h("tr", {}, ...["日期", "文章", "状态", "用时", "速度", "点读", "首答正确率", "生字", "骨头"].map((x) => h("th", {}, x))),
@@ -171,8 +173,8 @@ const VIEWS = {
     const filter = h("div", { class: "row" }, ...[["", "全部"], ...Object.entries(STATUS)].map(([k, label]) =>
       h("button", { class: "small " + (k === status ? "" : "ghost"), onclick: () => { history.replaceState(null, "", `?status=${k}#library`); render(); } }, `${label}${k && d.counts[k] ? ` ${d.counts[k]}` : ""}`)));
     return h("div", {},
-      d.aiPausedUntil ? h("div", { class: "card", style: "background:var(--accent-soft)" },
-        `⏸ Workers AI 今天的免费额度已用完，入库暂停，${new Date(d.aiPausedUntil).toLocaleString("zh-CN", { hour12: false })} 自动继续。排队的文章不会被判失败。`) : null,
+      d.aiPaused ? h("div", { class: "card", style: "background:var(--accent-soft)" },
+        `⏸ ${d.aiPaused.reason === "budget" ? "今天入库的 AI 调用已到上限（可在“设置”里调整）" : "Workers AI 今天的免费额度已用完"}，入库暂停，${new Date(d.aiPaused.until).toLocaleString("zh-CN", { hour12: false })} 自动继续。排队的文章不会被判失败。`) : null,
       h("div", { class: "card" }, h("div", { class: "row" }, filter, h("span", { class: "spacer" }), pending ? runBtn : null),
         h("p", { class: "muted", style: "font-size:14px" }, "入库流程：硬指标（覆盖率、句长、字数）→ AI 适龄评估 → 拼音 → 生字卡 → 出题 → 朗读音频。定时任务每 30 分钟自动处理一次。")),
       h("div", { class: "card" }, d.articles.length ? h("table", {},
@@ -305,6 +307,7 @@ const VIEWS = {
           audio: f.audio.value === "1",
           protagonist: { name: f.hero_name.value.trim(), traits: f.hero_traits.value.trim(), friends: f.hero_friends.value.trim() },
           auto_generate: f.auto_generate.value === "1",
+          ai_daily_calls: Number(f.ai_daily_calls.value),
         });
         toast("已保存");
       } catch (e) { toast(e.message); }
@@ -324,6 +327,7 @@ const VIEWS = {
         field("hero_name", "定制故事主角名", h("input", { value: s.protagonist?.name || "", placeholder: `留空 = ${s.child_name}` })),
         field("hero_traits", "主角性格与爱好", h("input", { value: s.protagonist?.traits || "", placeholder: "如：爱踢球，有点马虎，喜欢恐龙" })),
         field("hero_friends", "主角的好朋友", h("input", { value: s.protagonist?.friends || "", placeholder: "如：同桌乐乐、小狗豆豆" })),
+        field("ai_daily_calls", "每天入库最多调用 AI 次数", num(s.ai_daily_calls, 0, 1000), "一篇文章约 5–6 次；0 = 不限。剩下的额度留给复述等孩子当天用的功能"),
         field("auto_generate", "书库不够时自动写故事", sel(s.auto_generate ? "1" : "0", [["1", "是（每天最多一篇）"], ["0", "否"]]), "合适的未读文章少于 2 篇时，AI 按孩子的字表补一篇"),
         field("bedtime", "就寝时间", h("input", { type: "time", value: s.bedtime }), "之后只开放听读"),
         field("wake_time", "起床时间", h("input", { type: "time", value: s.wake_time }))),
@@ -463,13 +467,28 @@ function pinyinCard(a) {
     h("p", { class: "muted", style: "font-size:13px" }, "纠错按词语生效：书库里所有含这个词的文章都会改过来，以后入库的文章也会用它。"));
 }
 
+const PURPOSE = { screen: "适龄审核", glosses: "生字卡", questions: "出题", skills: "技能题", polyphones: "多音字", story: "写故事", retell: "复述评估", stt: "语音转写" };
+function aiUsageCard(u) {
+  const days = [...new Set(u.rows.map((r) => r.day))];
+  return h("div", { class: "card" }, h("h2", {}, "AI 用量"),
+    h("p", { class: "muted", style: "font-size:14px" },
+      `今天（UTC ${u.today}）入库已用 ${u.ingestToday}${u.limit ? ` / ${u.limit}` : ""} 次。免费额度每天 1 万 neurons，北京时间 8 点重置。`,
+      u.paused ? `　⏸ 暂停中（${u.paused.reason === "budget" ? "到上限" : "额度用完"}）` : ""),
+    days.length ? h("table", {},
+      h("tr", {}, h("th", {}, "日期"), ...Object.values(PURPOSE).map((p) => h("th", {}, p))),
+      ...days.map((d) => h("tr", {}, h("td", {}, d.slice(5)), ...Object.keys(PURPOSE).map((k) => {
+        const r = u.rows.find((x) => x.day === d && x.purpose === k);
+        return h("td", { title: r ? `输入 ${r.in_chars} 字符 / 输出 ${r.out_chars} 字符` : "" }, r ? `${r.calls}${r.failures ? `（败 ${r.failures}）` : ""}` : "");
+      })))) : h("p", { class: "muted" }, "最近 7 天还没有调用。"));
+}
+
 async function runPipeline(btn) {
   btn.disabled = true;
   try {
     for (let i = 0; i < 200; i++) {
       const r = await api("POST", "/api/parent/pipeline/step");
       btn.textContent = `处理中…（剩 ${r.pending}）${r.log ? " " + r.log : ""}`;
-      if (r.paused) { toast("AI 今日额度已用完，入库暂停，额度重置后自动继续", 4000); break; }
+      if (r.paused) { toast(r.log.replace(/^⏸\s*/, ""), 4000); break; }
       if (!r.pending) break;
     }
   } catch (e) { toast(e.message); }

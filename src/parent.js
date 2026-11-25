@@ -1,10 +1,10 @@
 // Parent-facing API: report, library review, ingestion, settings,
 // textbook lists, monthly passport, reward redemption.
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet, DEFAULT_SETTINGS } from "./db.js";
-import { enqueue, step, nextPending, requeue, reapplyFix, enqueueGenerated, aiPausedUntil, PAUSED } from "./pipeline.js";
+import { enqueue, step, nextPending, requeue, reapplyFix, enqueueGenerated, aiPausedUntil, PAUSED, INGEST_PURPOSES, ingestCallsToday } from "./pipeline.js";
 import { paragraphs, isHan, newCharsFor, newTier } from "./lib/text.js";
 import { cnDate, addDays, levelReached } from "./lib/logic.js";
-import { ABILITY_NAMES, GENRE_NAMES, GENRES } from "./lib/ai.js";
+import { ABILITY_NAMES, GENRE_NAMES, GENRES, utcDay } from "./lib/ai.js";
 import { HttpError, safeJSON, snapshot, streakInfo } from "./child.js";
 
 // ---------------------------------------------------------------- report
@@ -87,7 +87,7 @@ export async function listArticles(env, status) {
   const rows = await all(env, `SELECT id, title, status, stage, genre, char_count, difficulty, coverage, avg_sentence_len, age_fit, ai_note, reject_reason, last_error, created_at
     FROM articles WHERE ${where} ORDER BY id DESC LIMIT 300`, ...(status && ok.includes(status) ? [status] : []));
   const counts = await all(env, "SELECT status, COUNT(*) n FROM articles GROUP BY status");
-  return { articles: rows.map((r) => ({ ...r, genreName: GENRE_NAMES[r.genre] || r.genre })), counts: Object.fromEntries(counts.map((c) => [c.status, c.n])), aiPausedUntil: await aiPausedUntil(env) };
+  return { articles: rows.map((r) => ({ ...r, genreName: GENRE_NAMES[r.genre] || r.genre })), counts: Object.fromEntries(counts.map((c) => [c.status, c.n])), aiPaused: await aiPausedUntil(env) };
 }
 
 export async function articleDetail(env, id) {
@@ -228,6 +228,16 @@ export async function generate(env, { hero, genre, theme, focus }) {
   return enqueueGenerated(env, { hero: !!hero, genre, theme: String(theme || "").trim(), focus: okFocus.includes(focus) ? focus : null });
 }
 
+/** AI usage per UTC day and purpose (last 7 days), for the parent console. */
+export async function aiUsage(env) {
+  const since = utcDay(Date.now() - 6 * 86400000);
+  const rows = await all(env, "SELECT day, purpose, calls, in_chars, out_chars, failures FROM ai_usage WHERE day >= ? ORDER BY day DESC", since);
+  const s = await getSettings(env);
+  const today = utcDay();
+  const ingestToday = rows.filter((r) => r.day === today && INGEST_PURPOSES.includes(r.purpose)).reduce((n, r) => n + r.calls, 0);
+  return { rows, today, ingestToday, limit: s.ai_daily_calls, paused: await aiPausedUntil(env) };
+}
+
 export async function pipelineStep(env) {
   const line = await step(env);
   const pending = await first(env, "SELECT COUNT(*) n FROM articles WHERE status IN ('queued','processing')");
@@ -257,7 +267,7 @@ export async function removePinyinFix(env, { word }) {
 }
 
 // ---------------------------------------------------------------- settings
-const EDITABLE = ["protagonist", "auto_generate", "pinyin", "font_size", "session_min", "rest_min", "daily_limit_min", "bedtime", "wake_time", "interests", "rewards", "audio", "skill_days", "child_name", "target_new", "params"];
+const EDITABLE = ["ai_daily_calls", "protagonist", "auto_generate", "pinyin", "font_size", "session_min", "rest_min", "daily_limit_min", "bedtime", "wake_time", "interests", "rewards", "audio", "skill_days", "child_name", "target_new", "params"];
 
 export async function getParentSettings(env) {
   const s = await getSettings(env);
@@ -285,8 +295,14 @@ export async function putSettings(env, body) {
       case "params": if (typeof v !== "object") bad(); break;
       case "protagonist": if (!v || typeof v !== "object" || ["name", "traits", "friends"].some((k) => typeof (v[k] ?? "") !== "string" || (v[k] || "").length > 60)) bad(); break;
       case "auto_generate": if (typeof v !== "boolean") bad(); break;
+      case "ai_daily_calls": if (!(Number.isInteger(v) && v >= 0 && v <= 1000)) bad(); break;
     }
     await setSetting(env, k, k === "params" ? { ...DEFAULT_SETTINGS.params, ...v } : v);
+  }
+  // raising (or removing) the daily limit lifts a pause it caused; a quota pause stays
+  if ("ai_daily_calls" in body) {
+    const cur = await getSettings(env);
+    if (cur.ai_paused_reason === "budget" && (body.ai_daily_calls === 0 || body.ai_daily_calls > (await ingestCallsToday(env)))) await setSetting(env, "ai_paused_until", null);
   }
   return getParentSettings(env);
 }

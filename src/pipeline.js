@@ -4,7 +4,7 @@
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet } from "./db.js";
 import { normalise, paragraphs, articleMetrics, hardScreen, rankOf, CORE_RANK, MAX_RANK, VOLUME_END, LEVEL_ORDER, newCharsFor, charCounts, countHan } from "./lib/text.js";
 import { annotate, readingAt, readingOf, polyphonesIn, applyFixes } from "./lib/pinyin.js";
-import { screenArticle, glossChars, makeQuestions, makeSkills, tts, checkPolyphones, writeStory, rewriteStory, GENRES, isQuotaError } from "./lib/ai.js";
+import { screenArticle, glossChars, makeQuestions, makeSkills, tts, checkPolyphones, writeStory, rewriteStory, GENRES, isQuotaError, utcDay } from "./lib/ai.js";
 import { cnDate, addDays } from "./lib/logic.js";
 
 export const STAGES = ["generate", "metrics", "screen", "pinyin", "polyphones", "encounters", "glosses", "questions", "skills", "audio"];
@@ -35,19 +35,43 @@ export async function nextPending(env) {
 }
 
 /** Run one stage of one article. Returns a short log line. */
-/** When the AI daily allocation is used up the whole pipeline waits (ISO time) — null when running. */
+/** Stages that call a model (the rest is code). */
+const AI_STAGES = new Set(["generate", "screen", "polyphones", "glosses", "questions", "skills"]);
+export const INGEST_PURPOSES = ["screen", "glosses", "questions", "skills", "polyphones", "story"];
+const nextUtcMidnight = () => new Date(Math.floor(Date.now() / 86400000 + 1) * 86400000).toISOString();
+const PAUSE_TEXT = { quota: "AI 今日免费额度已用完", budget: "今日入库的 AI 调用已到上限" };
+
+/** {until, reason} while the pipeline waits for the next UTC day; null when running. */
 export async function aiPausedUntil(env) {
   const s = await getSettings(env);
-  return s.ai_paused_until && Date.now() < Date.parse(s.ai_paused_until) ? s.ai_paused_until : null;
+  return s.ai_paused_until && Date.now() < Date.parse(s.ai_paused_until) ? { until: s.ai_paused_until, reason: s.ai_paused_reason || "quota" } : null;
+}
+async function pause(env, reason) {
+  const until = nextUtcMidnight();
+  await setSetting(env, "ai_paused_until", until);
+  await setSetting(env, "ai_paused_reason", reason);
+  return until;
 }
 export const PAUSED = "⏸";
 
+export async function ingestCallsToday(env) {
+  const r = await first(env, `SELECT COALESCE(SUM(calls), 0) n FROM ai_usage WHERE day = ? AND purpose IN (${INGEST_PURPOSES.map(() => "?").join(",")})`, utcDay(), ...INGEST_PURPOSES);
+  return r.n;
+}
+
 export async function step(env, article) {
   const paused = await aiPausedUntil(env);
-  if (paused) return `${PAUSED} AI 今日额度已用完，${paused} 后继续`;
+  if (paused) return `${PAUSED} ${PAUSE_TEXT[paused.reason]}，${paused.until} 后继续`;
   const a = article || (await nextPending(env));
   if (!a) return null;
   const stage = a.stage;
+  if (AI_STAGES.has(stage)) {
+    const limit = (await getSettings(env)).ai_daily_calls;
+    if (limit > 0 && (await ingestCallsToday(env)) >= limit) {
+      const until = await pause(env, "budget");
+      return `${PAUSED} ${PAUSE_TEXT.budget}（${limit} 次），${until} 后继续`;
+    }
+  }
   try {
     const done = await STAGE_FN[stage](env, a);
     if (done === "stay") return `#${a.id} ${stage} (continuing)`;
@@ -60,8 +84,7 @@ export async function step(env, article) {
     const msg = String(e && (e.message || e)).slice(0, 300);
     if (isQuotaError(e)) {
       // not the article's fault: pause everything until the allocation resets (00:00 UTC)
-      const until = new Date(Math.floor(Date.now() / 86400000 + 1) * 86400000).toISOString();
-      await setSetting(env, "ai_paused_until", until);
+      const until = await pause(env, "quota");
       await run(env, "UPDATE articles SET last_error = ? WHERE id = ?", `等待 AI 额度重置（${until}）`, a.id);
       return `${PAUSED} #${a.id} ${stage}: AI 今日额度已用完，${until} 后继续`;
     }

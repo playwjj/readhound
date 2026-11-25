@@ -33,7 +33,10 @@ export const DEFAULT_SETTINGS = {
   child_name: "小读者",
   // §16-4: the hero of personalised stories (二期主角定制短篇)
   protagonist: { name: "", traits: "", friends: "" }, // name "" = child_name
-  auto_generate: true, // write a story when the library has nothing suitable (max 1/day)
+  auto_generate: true,
+  // AI calls the ingest pipeline may make per UTC day (0 = no limit); the rest
+  // of the daily allocation stays free for the child's live features
+  ai_daily_calls: 60, // write a story when the library has nothing suitable (max 1/day)
   pinyin_fixes: [], // [{word: "长着", pinyin: "zhǎng zhe"}] — parent corrections, win over everything
 };
 

@@ -229,3 +229,14 @@ CREATE TABLE IF NOT EXISTS retells (
   at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_retells_session ON retells(session_id);
+
+-- Workers AI accounting (per UTC day, per purpose).
+CREATE TABLE IF NOT EXISTS ai_usage (
+  day       TEXT NOT NULL,               -- YYYY-MM-DD UTC
+  purpose   TEXT NOT NULL,               -- screen | glosses | questions | skills | polyphones | story | retell | stt
+  calls     INTEGER NOT NULL DEFAULT 0,
+  in_chars  INTEGER NOT NULL DEFAULT 0,
+  out_chars INTEGER NOT NULL DEFAULT 0,
+  failures  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, purpose)
+);

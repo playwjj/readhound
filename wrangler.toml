@@ -1,4 +1,4 @@
-# ReadHound — Cloudflare Worker configuration (dc2926 account)
+# ReadHound — Cloudflare Worker configuration
 name = "readhound"
 main = "src/index.js"
 compatibility_date = "2025-09-01"

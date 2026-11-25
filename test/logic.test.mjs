@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { articleMetrics, hardScreen, sentences, newCharsFor, rankOf, gradeOf, paragraphs, normalise, newTier, VOLUME_END, textbookInfo } from "../src/lib/text.js";
-import { annotate, toneVariants, pinyinChoices } from "../src/lib/pinyin.js";
+import { annotate, toneVariants, pinyinChoices, polyphonesIn, applyFixes } from "../src/lib/pinyin.js";
 import {
   verdict, srsUpdate, rankCandidates, adaptTarget, scoreAssessment, sampleLevel, streakFrom, addDays,
   eyeCare, skillsFor, medalsFor, puppyStage, cnDate, levelChars, levelSize, levelReached, ASSESS_LEVELS,
 } from "../src/lib/logic.js";
-import { extractJSON, validateQuestions, validateGlosses, validateScreen } from "../src/lib/ai.js";
+import { extractJSON, validateQuestions, validateGlosses, validateScreen, validatePolyphones } from "../src/lib/ai.js";
 import { splitBulk, wikiHtmlToText, suggest } from "../src/parent.js";
 import { readFileSync } from "node:fs";
 
@@ -284,4 +284,28 @@ test("tiers: PASS ≤8, REVIEW ≤15, later beyond; picking never prefers a hard
 test("adult explanatory prose is rejected on sentence length", () => {
   const adult = "这个寓言故事通过对比兔子和乌龟在比赛过程中所表现出来的截然不同的态度和行为方式告诉我们一个非常深刻的道理。".repeat(12);
   assert.ok(hardScreen(articleMetrics(adult)).some((w) => w.includes("句子太长")));
+});
+
+test("polyphones: candidates found, particles skipped, model answers constrained", () => {
+  const p = "长着一根根又长又硬的胡子，他还了书。";
+  const items = polyphonesIn(p);
+  assert.deepEqual(items.map((x) => x.char), ["长", "长", "还"]);
+  assert.equal(items[0].index, 0);
+  assert.ok(items[2].candidates.includes("huán"));
+  assert.match(items[1].context, /^长着一根根又【长】又硬/); // the target is marked, not ambiguous
+  const ans = validatePolyphones({ 0: "zhǎng", 1: "cháng", 2: "huan" }, items);
+  assert.deepEqual(ans, { 0: "zhǎng", 1: "cháng" }); // "huan" (no tone) is not a candidate → keep pinyin-pro
+  // neutral tone kept: the model may not "upgrade" 喜欢 huan → huān
+  const neutral = [{ char: "欢", reading: "huan", candidates: ["huan", "huān"] }, { char: "兴", reading: "xīng", candidates: ["xīng", "xìng"] }];
+  assert.deepEqual(validatePolyphones({ 0: "huān", 1: "xìng" }, neutral), { 1: "xìng" });
+});
+
+test("applyFixes rewrites every occurrence of a word, aligned to Han chars", () => {
+  const p = "长着胡子，“长着”呢。";
+  const syl = annotate(p);
+  const out = applyFixes(p, syl, [{ word: "长着", pinyin: "zhǎng zhe" }]).split(" ");
+  assert.equal(out[0], "zhǎng");
+  assert.equal(out[4], "zhǎng");
+  assert.equal(out.length, syl.split(" ").length);
+  assert.equal(applyFixes(p, syl, [{ word: "长着", pinyin: "zhǎng" }]), syl); // length mismatch ignored
 });

@@ -1,12 +1,12 @@
 // Ingest pipeline (§4–§6): one article, one stage per step, so every
 // invocation stays small (Worker CPU limits) and failures retry per stage.
-//   metrics → screen → pinyin → encounters → glosses → questions → audio → ready
+//   metrics → screen → pinyin → polyphones → encounters → glosses → questions → audio → ready
 import { all, first, run, stmt, batch, getSettings, knownSet } from "./db.js";
 import { normalise, paragraphs, articleMetrics, hardScreen, rankOf, CORE_RANK, MAX_RANK, VOLUME_END, newCharsFor } from "./lib/text.js";
-import { annotate, readingAt, readingOf } from "./lib/pinyin.js";
-import { screenArticle, glossChars, makeQuestions, tts } from "./lib/ai.js";
+import { annotate, readingAt, readingOf, polyphonesIn, applyFixes } from "./lib/pinyin.js";
+import { screenArticle, glossChars, makeQuestions, tts, checkPolyphones } from "./lib/ai.js";
 
-export const STAGES = ["metrics", "screen", "pinyin", "encounters", "glosses", "questions", "audio"];
+export const STAGES = ["metrics", "screen", "pinyin", "polyphones", "encounters", "glosses", "questions", "audio"];
 const MAX_ATTEMPTS = 3;
 const GLOSS_CAP = 24;
 
@@ -105,6 +105,27 @@ const STAGE_FN = {
     if (py.length < paras.length) return "stay";
   },
 
+  /** Qwen checks the readings of polyphonic characters (constrained to the candidates); parent fixes win. */
+  async polyphones(env, a) {
+    const paras = paragraphs(a.body);
+    const py = JSON.parse(a.pinyin).map((x) => x.split(" "));
+    const items = [];
+    paras.forEach((p, pi) => polyphonesIn(p).forEach((it) => items.push({ ...it, pi })));
+    let fixed = 0;
+    // one model call per article; long articles: the first 60 occurrences
+    const picked = items.slice(0, 60);
+    const answers = await checkPolyphones(env, picked);
+    picked.forEach((it, i) => {
+      if (answers[i] && answers[i] !== py[it.pi][it.index]) {
+        py[it.pi][it.index] = answers[i];
+        fixed++;
+      }
+    });
+    const s = await getSettings(env);
+    const out = paras.map((p, i) => applyFixes(p, py[i].join(" "), s.pinyin_fixes));
+    await run(env, "UPDATE articles SET pinyin = ?, polyphones_fixed = ? WHERE id = ?", JSON.stringify(out), fixed, a.id);
+  },
+
   async encounters(env, a) {
     const counts = new Map();
     for (const ch of a.body) if (a.uniq.includes(ch) && rankOf(ch) > CORE_RANK) counts.set(ch, (counts.get(ch) || 0) + 1);
@@ -182,6 +203,30 @@ export async function ensureGlosses(env, a, chars) {
       a.id, ch, py, g.word, g.gloss, g.example);
   });
   await batch(env, rows);
+}
+
+/**
+ * Re-apply the parent's pinyin fixes to stored articles containing `word`.
+ * Candidates come from the encounters index of the word's rarest character
+ * (no full scan of articles); returns the number of articles updated.
+ */
+export async function reapplyFix(env, word) {
+  const chars = [...word];
+  const rare = chars.reduce((x, y) => (rankOf(y) > rankOf(x) ? y : x));
+  const rows = rankOf(rare) > CORE_RANK
+    ? await all(env, "SELECT a.id, a.body, a.pinyin FROM char_encounters e JOIN articles a ON a.id = e.article_id WHERE e.char = ? AND a.pinyin IS NOT NULL", rare)
+    : await all(env, "SELECT id, body, pinyin FROM articles WHERE status IN ('ready','flagged') AND instr(body, ?) > 0 LIMIT 500", word);
+  const s = await getSettings(env);
+  let n = 0;
+  for (const r of rows) {
+    if (!r.body.includes(word)) continue;
+    const paras = paragraphs(r.body);
+    const py = JSON.parse(r.pinyin);
+    const out = paras.map((p, i) => applyFixes(p, py[i] || "", s.pinyin_fixes));
+    await run(env, "UPDATE articles SET pinyin = ? WHERE id = ?", JSON.stringify(out), r.id);
+    n++;
+  }
+  return n;
 }
 
 /** Parent actions on an article. */

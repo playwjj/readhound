@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS = {
   freeze_earned_at: 0,
   skill_days: 5, // completed readings between skill unlocks
   child_name: "小读者",
+  pinyin_fixes: [], // [{word: "长着", pinyin: "zhǎng zhe"}] — parent corrections, win over everything
 };
 
 export async function getSettings(env) {

@@ -1,7 +1,7 @@
 // Parent-facing API: report, library review, ingestion, settings,
 // textbook lists, monthly passport, reward redemption.
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet, DEFAULT_SETTINGS } from "./db.js";
-import { enqueue, step, nextPending, requeue } from "./pipeline.js";
+import { enqueue, step, nextPending, requeue, reapplyFix } from "./pipeline.js";
 import { paragraphs, isHan, newCharsFor, newTier } from "./lib/text.js";
 import { cnDate, addDays, levelReached } from "./lib/logic.js";
 import { ABILITY_NAMES, GENRE_NAMES, GENRES } from "./lib/ai.js";
@@ -99,6 +99,7 @@ export async function articleDetail(env, id) {
     glosses: gl,
     newForChild: teachable,
     tierForChild: newTier(teachable.length),
+    pinyinParas: safeJSON(a.pinyin, []),
     rareForChild: allNew.filter((c) => !teachable.includes(c)),
     reads,
   };
@@ -217,12 +218,34 @@ export async function pipelineStep(env) {
   return { log: line, pending: pending.n };
 }
 
+// ---------------------------------------------------------------- pinyin fixes
+const SYLLABLE = /^[a-zāáǎàēéěèīíǐìōóǒòūúǔùüǖǘǚǜ]{1,7}$/;
+
+export async function addPinyinFix(env, { word, pinyin }) {
+  word = String(word || "").trim();
+  const py = String(pinyin || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (![...word].length || ![...word].every(isHan)) throw new HttpError(400, "词语只能是汉字");
+  if (py.length !== [...word].length) throw new HttpError(400, `拼音要和字一一对应：${[...word].length} 个字，${py.length} 个拼音`);
+  if (!py.every((x) => SYLLABLE.test(x))) throw new HttpError(400, "拼音格式不对，请用带声调的拼音，如 zhǎng zhe");
+  const s = await getSettings(env);
+  const fixes = (s.pinyin_fixes || []).filter((f) => f.word !== word);
+  fixes.push({ word, pinyin: py.join(" ") });
+  await setSetting(env, "pinyin_fixes", fixes);
+  return { ok: true, updated: await reapplyFix(env, word), fixes };
+}
+
+export async function removePinyinFix(env, { word }) {
+  const s = await getSettings(env);
+  await setSetting(env, "pinyin_fixes", (s.pinyin_fixes || []).filter((f) => f.word !== word));
+  return { ok: true, note: "已删除；已改过的文章在“重新处理”后恢复自动拼音" };
+}
+
 // ---------------------------------------------------------------- settings
 const EDITABLE = ["pinyin", "font_size", "session_min", "rest_min", "daily_limit_min", "bedtime", "wake_time", "interests", "rewards", "audio", "skill_days", "child_name", "target_new", "params"];
 
 export async function getParentSettings(env) {
   const s = await getSettings(env);
-  return Object.fromEntries(EDITABLE.map((k) => [k, s[k]]));
+  return { ...Object.fromEntries(EDITABLE.map((k) => [k, s[k]])), pinyin_fixes: s.pinyin_fixes || [] };
 }
 
 export async function putSettings(env, body) {

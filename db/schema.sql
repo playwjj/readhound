@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS articles (
   ai_note           TEXT,                -- one-line ai comment
   reject_reason     TEXT,
   pinyin            TEXT,                -- JSON array: per paragraph, space-separated syllables per Han char
+  polyphones_fixed  INTEGER,             -- readings the model corrected after pinyin-pro
   audio             TEXT,                -- JSON array: R2 key per paragraph (null = use device voice)
   purpose           TEXT,                -- 带着问题读: the pre-reading observation task
   status            TEXT NOT NULL DEFAULT 'queued', -- queued | processing | flagged | ready | rejected | retired

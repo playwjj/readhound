@@ -286,6 +286,39 @@ function mockQuestions(body, guessChars) {
   return { purpose: { task: "（模拟）读的时候留意每段开头的字", q: 0 }, questions, guess };
 }
 
+// ------------------------------------------------------------------ polyphones
+export function polyphonePrompt(items) {
+  return `下面每一行是一句话，其中用【】标出了一个多音字。请根据上下文判断【】里这个字在这里的正确读音（只能从候选里选）。
+${items.map((it, i) => `[${i}] ……${it.context}……  候选：${it.candidates.join(" / ")}`).join("\n")}
+
+输出 JSON 对象，键是行号，值是读音（带声调），例如 {"0":"zhǎng","1":"huán"}。`;
+}
+
+const toneless = (py) => py.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/u\u0308|ü/g, "v");
+const hasTone = (py) => toneless(py) !== py.normalize("NFD").replace(/u\u0308/g, "v");
+
+/**
+ * Keep only answers that are one of the candidates. A neutral tone from
+ * pinyin-pro (喜欢 xǐ huan, 奶奶 nǎi nai) is kept even if the model offers the
+ * citation tone of the same syllable: textbooks mark these words neutral.
+ */
+export function validatePolyphones(o, items) {
+  if (!o || typeof o !== "object") throw new Error("expected object");
+  const out = {};
+  items.forEach((it, i) => {
+    const v = String(o[i] ?? o[String(i)] ?? "").trim();
+    if (!it.candidates.includes(v)) return;
+    if (it.reading && !hasTone(it.reading) && toneless(v) === toneless(it.reading)) return;
+    out[i] = v;
+  });
+  return out;
+}
+
+export async function checkPolyphones(env, items) {
+  if (!items.length || env.AI_MOCK === "1") return {};
+  return generate(env, polyphonePrompt(items), (o) => validatePolyphones(o, items), { maxTokens: 60 + items.length * 14, temperature: 0.1 });
+}
+
 // ------------------------------------------------------------------ TTS
 /** TTS_MODEL → mp3 bytes. Returns null when not configured (client uses the device voice). */
 export async function tts(env, text) {

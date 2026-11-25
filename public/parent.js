@@ -299,7 +299,12 @@ const VIEWS = {
         field("audio", "预生成朗读音频", sel(s.audio ? "1" : "0", [["1", "是（需配置 TTS_MODEL，存 R2）"], ["0", "否（用设备语音）"]]), "Workers AI 目前没有中文朗读模型，默认用 iPad 自带中文语音"),
         field("bedtime", "就寝时间", h("input", { type: "time", value: s.bedtime }), "之后只开放听读"),
         field("wake_time", "起床时间", h("input", { type: "time", value: s.wake_time }))),
-      h("div", { class: "row end", style: "margin-top:16px" }, h("button", { onclick: save }, "保存设置")));
+      h("div", { class: "row end", style: "margin-top:16px" }, h("button", { onclick: save }, "保存设置")),
+      h("h3", {}, `拼音纠错（${(s.pinyin_fixes || []).length}）`),
+      (s.pinyin_fixes || []).length
+        ? h("table", {}, ...s.pinyin_fixes.map((f) => h("tr", {}, h("td", { style: "font-size:20px" }, f.word), h("td", {}, f.pinyin),
+            h("td", {}, h("button", { class: "ghost small", onclick: async () => { await api("DELETE", "/api/parent/pinyin-fix", { word: f.word }); render(); } }, "删除")))))
+        : h("p", { class: "muted" }, "还没有。在书库里打开文章，点读错的字即可纠正。"));
   },
 
   async rewards() {
@@ -382,8 +387,40 @@ async function articleView(id) {
           h("span", { class: "pill" }, q.kind === "guess" ? "猜词义" : q.abilityName), " ", h("b", {}, q.prompt),
           h("ol", { type: "A", style: "margin:4px 0" }, ...q.options.map((o, i) => h("li", { style: i === q.answer ? "color:var(--good);font-weight:600" : "" }, o))),
           q.evidence != null ? h("div", { class: "muted", style: "font-size:13px" }, `依据：第 ${q.evidence + 1} 段`) : null)))),
-    h("div", { class: "card" }, h("h2", {}, "正文"), ...a.paragraphs.map((p, i) => h("p", {}, h("span", { class: "muted" }, `[${i + 1}] `), p))),
+    pinyinCard(a),
     a.reads.length ? h("div", { class: "card" }, h("h2", {}, "阅读记录"), ...a.reads.map((r) => h("div", {}, `${r.date} · ${LEVEL[r.level]} · 正确率 ${pct(r.accuracy)} · ${Math.round(r.active_ms / 60000)} 分钟`))) : null));
+}
+
+/** Article text with its pinyin, so a wrong reading is easy to spot and fix. */
+function pinyinCard(a) {
+  const word = h("input", { placeholder: "词语，如：长着" });
+  const py = h("input", { placeholder: "正确拼音，如：zhǎng zhe" });
+  const paras = a.paragraphs.map((p, i) => {
+    const syl = (a.pinyinParas[i] || "").split(" ");
+    let k = 0;
+    const el = h("p", { class: "py-view" }, h("span", { class: "muted" }, `[${i + 1}] `));
+    for (const ch of p) {
+      if (!/\p{Script=Han}/u.test(ch)) { el.append(ch); continue; }
+      const s = syl[k++] || "";
+      el.append(h("ruby", { title: "点一下填入纠错框", onclick: () => { word.value = ch; py.value = s; word.focus(); } }, ch, h("rt", {}, s)));
+    }
+    return el;
+  });
+  const save = async () => {
+    try {
+      const r = await api("POST", "/api/parent/pinyin-fix", { word: word.value, pinyin: py.value });
+      toast(`已保存，更新了 ${r.updated} 篇文章`);
+      articleView(a.id);
+    } catch (e) { toast(e.message); }
+  };
+  return h("div", { class: "card" },
+    h("h2", {}, "正文与拼音"),
+    a.polyphones_fixed != null ? h("p", { class: "muted", style: "font-size:14px" }, `AI 核对多音字时改正了 ${a.polyphones_fixed} 处。点任意一个字可填入下面的纠错框。`) : null,
+    ...paras,
+    h("div", { class: "row", style: "margin-top:12px" },
+      h("div", { style: "flex:1;min-width:140px" }, word), h("div", { style: "flex:2;min-width:180px" }, py),
+      h("button", { class: "small", onclick: save }, "纠正读音")),
+    h("p", { class: "muted", style: "font-size:13px" }, "纠错按词语生效：书库里所有含这个词的文章都会改过来，以后入库的文章也会用它。"));
 }
 
 async function runPipeline(btn) {

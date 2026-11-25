@@ -20,8 +20,14 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 function show(...nodes) {
+  $app.classList.remove("wide");
   $app.replaceChildren(...nodes.flat().filter((n) => n != null && n !== false));
   window.scrollTo(0, 0);
+}
+/** Same, for pages that use the full width in landscape (two columns); reading pages stay narrow. */
+function showWide(...nodes) {
+  show(...nodes);
+  $app.classList.add("wide");
 }
 function toast(msg, ms = 2200) {
   const t = h("div", { class: "toast" }, msg);
@@ -312,28 +318,29 @@ function homeView() {
   }
 
   const map = mapStrip(H.map, H.completed);
-  show(
+  showWide(
     h("div", { class: "topbar" },
       h("h1", {}, "字游记"), h("div", { class: "spacer" }),
       h("span", { class: "chip", title: "连续天数" }, "🔥 ", H.streak, H.freezes ? h("small", { class: "muted", title: "补签卡" }, ` ❄${H.freezes}`) : null),
       h("span", { class: "chip", title: "骨头" }, "🦴 ", H.bones)),
+    h("div", { class: "home-grid" }, h("div", {},
     h("div", { class: "card hero" },
       h("div", { class: "pup", html: pupSVG(H.puppy.key, H.accessories) }),
       h("div", {}, greeting(H),
         h("div", { class: "muted", style: "font-size:15px;margin-top:6px" },
           `小猎犬等级：${H.puppy.name}`, H.puppy.next ? `（再读 ${H.puppy.next.need} 篇变成${H.puppy.next.name}）` : ""))),
-    todayCard,
+    todayCard), h("div", {},
     h("div", { class: "stats" },
       h("div", { class: "stat" }, h("b", {}, H.completed), h("span", {}, "读完的文章")),
       h("div", { class: "stat" }, h("b", {}, H.tamedChars), h("span", {}, "驯服的生字")),
       h("div", { class: "stat" }, h("b", {}, H.knownChars), h("span", {}, "认识的字"))),
-    h("div", { class: "card", style: "margin-top:16px" },
+    h("div", { class: "card map-card" },
       h("div", { class: "row" }, h("b", {}, `🗺 ${H.map.region}`), h("span", { class: "spacer" }), h("span", { class: "muted" }, `第 ${H.map.node + 1} / ${H.map.perRegion} 站`)),
       map),
     h("div", { class: "nav" },
       h("button", { onclick: collectionView }, h("span", { class: "ico" }, "📖"), "生字图鉴"),
       h("button", { onclick: mapView }, h("span", { class: "ico" }, "🗺"), "闯关地图"),
-      h("button", { onclick: skillsView }, h("span", { class: "ico" }, "🎒"), "技能法宝")),
+      h("button", { onclick: skillsView }, h("span", { class: "ico" }, "🎒"), "技能法宝")))),
     h("div", { class: "foot" }, h("a", { href: "/parent.html" }, "家长入口")));
 }
 
@@ -1111,21 +1118,21 @@ function resultView(res, already) {
     } }, "🎁");
     chestBox.append(h("div", { class: "muted" }, "点开惊喜宝箱"), chestBtn);
   }
-  show(...header(R.article.title, 1),
-    h("div", { class: "card celebrate" },
+  showWide(...header(R.article.title, 1),
+    h("div", { class: "card celebrate split" }, h("div", {},
       h("div", { html: pupSVG(rw.puppy.key, state.home?.accessories || [], "happy"), style: "width:150px;margin:0 auto" }),
       h("h2", {}, R.session.daily ? "今日阅读完成！" : "又读完一篇！"),
       rw.puppyGrew ? h("p", { class: "surprise" }, `🎉 小猎犬长大了，变成了${rw.puppy.name}！`) : null,
       h("div", { style: "text-align:left;margin:16px 0" },
         ...rw.bones.map((g) => h("div", { class: "gain" }, h("span", {}, g.reason), h("b", {}, `+${g.amount} 🦴`))),
-        h("div", { class: "gain" }, h("span", {}, "骨头总数"), h("b", {}, rw.balance))),
+        h("div", { class: "gain" }, h("span", {}, "骨头总数"), h("b", {}, rw.balance)))), h("div", {},
       R.session.daily ? h("p", {}, "🔥 连续阅读 ", h("b", {}, rw.streak), " 天", rw.freezeEarned ? "，还得到一张补签卡 ❄" : "") : null,
       h("p", { class: "muted" }, `🗺 ${rw.map.region} 第 ${rw.map.node || rw.map.perRegion} 站点亮了`),
       rw.medals.length ? h("div", {}, ...rw.medals.map((m) => h("span", { class: "medal" }, "🏅 ", m.title))) : null,
       chestBox,
       h("div", { class: "row center", style: "margin-top:16px" },
         retellButton(),
-        h("button", { class: "big", onclick: leaveReading }, "回家"))));
+        h("button", { class: "big", onclick: leaveReading }, "回家")))));
 }
 
 // ---------------------------------------------------------------- read aloud (朗读流利度)
@@ -1352,7 +1359,7 @@ async function rereadView(id, focusChar) {
 async function collectionView() {
   const c = await api("GET", "/api/collection");
   const count = (s) => c.cards.filter((x) => x.status === s).length;
-  show(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "生字图鉴")),
+  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "生字图鉴")),
     h("div", { class: "legend" },
       h("span", {}, `🏅 已驯服 ${count("mastered")}`), h("span", {}, `💙 认识 ${count("familiar")}`), h("span", {}, `👀 见过 ${count("seen")}`)),
     c.medals.length ? h("div", { class: "card" }, h("b", {}, "我的勋章 "), ...c.medals.map((m) => h("span", { class: "medal" }, "🏅 ", m.title))) : null,
@@ -1366,8 +1373,8 @@ async function collectionView() {
 function mapView() {
   const H = state.home;
   const regions = ["拼音草原", "汉字森林", "成语山谷", "神话之河", "故事城堡", "科学港湾", "诗词云岛", "智慧高塔"];
-  show(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "闯关地图")),
-    ...regions.map((name, r) => {
+  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "闯关地图")),
+    h("div", { class: "duo" }, ...regions.map((name, r) => {
       const lit = Math.max(0, Math.min(H.map.perRegion, H.completed - r * H.map.perRegion));
       const strip = h("div", { class: "map-strip" });
       for (let i = 0; i < H.map.perRegion; i++) {
@@ -1376,16 +1383,16 @@ function mapView() {
       }
       return h("div", { class: "card region" + (r > H.map.regionIndex ? " locked" : "") },
         h("h3", {}, (r > H.map.regionIndex ? "🔒 " : r < H.map.regionIndex ? "✅ " : "📍 ") + name), strip);
-    }));
+    })));
 }
 
 function skillsView() {
   const icons = { extract: "🔎", purpose: "🎯", guess: "🤔", predict: "🔮", locate: "📍", summarise: "🧩", retell: "🎤" };
-  show(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "技能法宝")),
-    ...state.home.skills.map((s) => h("div", { class: "card skill" + (s.unlocked ? "" : " locked") },
+  showWide(h("div", { class: "reader-head" }, h("button", { class: "ghost small", onclick: boot }, "← 回家"), h("div", { class: "t" }, "技能法宝")),
+    h("div", { class: "duo" }, ...state.home.skills.map((s) => h("div", { class: "card skill" + (s.unlocked ? "" : " locked") },
       h("div", { class: "badge" }, icons[s.key] || "⭐"),
       h("div", {}, h("b", {}, s.name), h("div", { class: "muted" }, s.desc),
-        h("div", { style: "font-size:15px" }, s.unlocked ? "✅ 已解锁" : s.phase === 2 ? "🔒 敬请期待" : `🔒 再通关 ${s.need} 篇解锁`)))));
+        h("div", { style: "font-size:15px" }, s.unlocked ? "✅ 已解锁" : `🔒 再通关 ${s.need} 篇解锁`))))));
 }
 
 // ================================================================ start

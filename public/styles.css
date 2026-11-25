@@ -132,7 +132,7 @@ button.icon { width: 52px; padding: 0; }
 .node.here { outline: 3px solid var(--accent); outline-offset: 2px; }
 .path { height: 4px; flex: 1; min-width: 6px; background: var(--line); border-radius: 2px; }
 .path.lit { background: var(--gold); }
-.region { margin-bottom: 18px; }
+
 .region h3 { margin: 0 0 6px; }
 .region.locked { opacity: 0.45; }
 
@@ -278,6 +278,31 @@ ruby.hz rt { display: block; font-size: 0.48em; line-height: 1.2; color: var(--i
 
 .foot { text-align: center; font-size: 14px; color: var(--ink-soft); margin-top: 28px; }
 .foot a { color: inherit; }
+
+/* ------------------------------------------------------------ layout */
+.map-card { margin-top: 16px; }
+.region { margin-bottom: 16px; }
+
+/* Landscape iPad (1080×810 and up): use the width so the main pages fit
+   without scrolling. Reading pages stay narrow on purpose (line length). */
+@media (orientation: landscape) and (min-width: 900px) {
+  .shell { padding-top: 14px; }
+  .shell.wide { max-width: 1120px; }
+  .home-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  .home-grid .card { margin-bottom: 16px; }
+  .home-grid .today { padding: 20px 22px; }
+  .home-grid .hero .pup { width: 108px; height: 108px; }
+  .home-grid .map-card { margin-top: 16px; }
+  .home-grid .nav { margin-top: 0; }
+  .duo { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; align-items: start; }
+  .duo > .card { margin-bottom: 0; }
+  .celebrate.split { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: center; }
+  .celebrate.split > div:last-child { text-align: center; }
+  .warm-card { padding: 22px 24px; }
+  .warm-card .big { font-size: 104px; }
+  .pin-wrap { margin-top: 3vh; }
+  .pad button { min-height: 64px; }
+}
 
 @media (max-width: 520px) {
   .hero .pup { width: 96px; height: 96px; }

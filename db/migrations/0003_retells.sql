@@ -1,4 +1,4 @@
--- 2026-11-25: voice retelling (语音复述). Run once:  npm run db:migrate 0003_retells
+-- 2026-11-25: voice retelling (语音复述). Run once:  npm run db:migrate (CI does this on push)
 CREATE TABLE IF NOT EXISTS retells (
   id          INTEGER PRIMARY KEY,
   session_id  INTEGER NOT NULL REFERENCES sessions(id),

@@ -17,7 +17,7 @@
     "reset:local": "rm -rf .wrangler/state/v3/d1 && wrangler d1 execute readhound --local --file=db/schema.sql",
     "seed": "node scripts/seed.mjs",
     "difficulty": "node scripts/difficulty.mjs",
-    "db:migrate": "sh -c 'wrangler d1 execute readhound --remote --file=db/migrations/$1.sql' --"
+    "db:migrate": "wrangler d1 migrations apply readhound --remote"
   },
   "type": "module",
   "version": "0.1.0",

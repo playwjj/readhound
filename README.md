@@ -174,14 +174,10 @@ npx wrangler secret put SESSION_SECRET   # long random string
 npm run deploy
 ```
 
-Schema changes after the first deploy live in `db/migrations/`; run each
-new one once before deploying the code that needs it:
-
-```sh
-npm run db:migrate 0001_polyphones_fixed
-npm run db:migrate 0002_question_meta
-npm run db:migrate 0003_retells
-```
+Schema changes after the first deploy live in `db/migrations/`
+(`NNNN_name.sql`). Pushing to `main` runs `.github/workflows/deploy.yml`:
+tests → `wrangler d1 migrations apply readhound --remote` (applies the ones
+not yet recorded) → `wrangler deploy`.
 
 Then attach the custom domain (e.g. read.404401.xyz) and add the page to
 the iPad home screen.

@@ -696,6 +696,7 @@ function readView() {
   const drawActions = () => {
     actions.replaceChildren();
     actions.append(h("button", { class: "soft", onclick: () => playParagraph(paras[R.idx]) }, "🔊 读这一段"));
+    if (R.readAloud) actions.append(h("button", { class: "soft", onclick: () => { stopAudio(); readAloudCard(R.idx); } }, "🎙 我来读"));
     if (predictHere()) {
       actions.append(h("button", { onclick: () => predictCard() }, "🔮 猜猜后面会怎样"));
       return;
@@ -1125,6 +1126,88 @@ function resultView(res, already) {
       h("div", { class: "row center", style: "margin-top:16px" },
         retellButton(),
         h("button", { class: "big", onclick: leaveReading }, "回家"))));
+}
+
+// ---------------------------------------------------------------- read aloud (朗读流利度)
+/** Record from the microphone: returns {start, stop} and calls onDone(blob, ms). */
+function recorder(onDone, onError, maxMs = 120000) {
+  let rec = null, stream = null, t0 = 0, cap = null;
+  return {
+    supported: !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
+    get recording() { return rec?.state === "recording"; },
+    async start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        return onError("需要允许使用麦克风才能录音。请让爸爸妈妈在设置里打开。");
+      }
+      const chunks = [];
+      rec = new MediaRecorder(stream);
+      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      rec.onstop = () => {
+        clearTimeout(cap);
+        stream.getTracks().forEach((t) => t.stop());
+        onDone(new Blob(chunks, { type: rec.mimeType || "audio/mp4" }), Date.now() - t0);
+      };
+      rec.start();
+      t0 = Date.now();
+      cap = setTimeout(() => rec.state === "recording" && rec.stop(), maxMs);
+    },
+    stop() { if (rec?.state === "recording") rec.stop(); },
+  };
+}
+
+function readAloudCard(i) {
+  const p = R.article.paragraphs[i];
+  const paraEl = rubyPara(p, i);
+  paraEl.classList.add("current");
+  const status = h("p", { class: "muted" }, "按“开始读”，把这一段大声读一遍，读完按“读完了”。");
+  const out = h("div", {});
+  const close = h("button", { class: "ghost", onclick: () => modal.remove() }, "接着读");
+  const btn = h("button", { class: "big" }, "🎙 开始读");
+  const r = recorder(async (blob, ms) => {
+    btn.disabled = true;
+    btn.textContent = "🎙 再读一遍";
+    status.textContent = "小猎犬正在认真听……";
+    try {
+      const res = await fetch(`/api/session/${R.session.id}/fluency?para=${i}&ms=${ms}`, { method: "POST", body: blob, headers: { "content-type": blob.type }, credentials: "same-origin" });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "出错了");
+      if (d.tooShort) { status.textContent = d.message; btn.disabled = false; return; }
+      showResult(d);
+      btn.disabled = d.left <= 0;
+    } catch (e) {
+      status.textContent = e.message === "Failed to fetch" ? "需要联网才能听你读，连上网再试试。" : e.message;
+      btn.disabled = false;
+    }
+  }, (msg) => { status.textContent = msg; });
+  btn.onclick = () => {
+    if (r.recording) return r.stop();
+    out.replaceChildren();
+    paraEl.querySelectorAll(".hz.miss").forEach((x) => x.classList.remove("miss"));
+    r.start();
+    btn.textContent = "⏹ 读完了";
+    status.textContent = "正在听……";
+  };
+  function showResult(d) {
+    const pct = Math.round(d.accuracy * 100);
+    const hz = [...paraEl.querySelectorAll(".hz")];
+    d.missed.forEach((m) => hz[m.index]?.classList.add("miss"));
+    status.textContent = "";
+    out.replaceChildren(
+      h("div", { class: `feedback ${pct >= 80 ? "ok" : "try"}` },
+        h("b", {}, pct >= 95 ? "读得又准又顺！🎉 " : pct >= 80 ? "读得不错！🐾 " : "读完啦！有几个地方再读读。 "),
+        `读准了 ${pct}%，每分钟 ${d.cpm} 字。`),
+      d.practise.length ? h("div", { style: "margin-top:10px" }, h("span", { class: "muted" }, "这几个地方再读读（点一下听）："),
+        ...d.practise.map((w) => h("button", { class: "small soft", style: "margin:4px", onclick: () => speak(w) }, `🔊 ${w}`))) : null);
+  }
+  const modal = h("div", { class: "modal" }, h("div", { class: "sheet" },
+    h("div", { class: "task" }, h("div", { class: "lbl" }, "技能 · 大声朗读"), `第 ${i + 1} 段`),
+    paraEl,
+    r.supported ? status : h("p", {}, "这台设备的浏览器不支持录音。"),
+    out,
+    h("div", { class: "row center", style: "margin-top:12px" }, r.supported ? btn : null, close)));
+  document.body.append(modal);
 }
 
 // ---------------------------------------------------------------- 7. voice retelling (语音复述)

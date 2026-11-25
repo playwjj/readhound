@@ -173,6 +173,7 @@ ruby.hz rt { display: block; font-size: 0.48em; line-height: 1.2; color: var(--i
 .hz.new { background: var(--new-mark); }
 .hz.review { box-shadow: inset 0 -3px 0 var(--blue); }
 .hz.tapped { background: var(--accent-soft); }
+.hz.miss { background: var(--accent-soft); box-shadow: inset 0 -3px 0 var(--accent); }
 .reader-actions { display: flex; gap: 12px; justify-content: center; margin: 12px 0 24px; flex-wrap: wrap; }
 .mode-pick { display: flex; gap: 8px; justify-content: center; }
 .mode-pick button { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }

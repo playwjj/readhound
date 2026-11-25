@@ -117,6 +117,11 @@ ok(F.rewards.medals.some((m) => m.code === "medal:read1"), "first medal");
 const F2 = await call("child", "POST", `/api/session/${sid}/finish`);
 ok(F2.rewards === null && F2.alreadyCompleted, "finishing twice does not pay twice");
 
+console.log("read aloud");
+ok(S.readAloud === true, "大声朗读 unlocked (skill_days 0)");
+const FL = await (await fetch(`${BASE}/api/session/${sid}/fluency?para=0&ms=8000`, { method: "POST", body: new Uint8Array(4000).fill(3), headers: { "content-type": "audio/mp4", cookie: jar.child } })).json();
+ok(typeof FL.accuracy === "number" && FL.cpm > 0 && Array.isArray(FL.practise) && FL.left === 14, `fluency: ${Math.round(FL.accuracy * 100)}%, ${FL.cpm} chars/min, ${FL.left} reads left today`);
+
 console.log("voice retelling");
 const audio = new Uint8Array(4000).fill(7);
 async function retell() {
@@ -143,6 +148,7 @@ ok(col.cards.length === S.newChars.length, `collection has ${col.cards.length} c
 const rep = await call("parent", "GET", "/api/parent/report");
 ok(rep.history.length === 1 && rep.radar.some((r) => r.total > 0), "report has history + radar");
 ok(rep.history[0].level === 3 && rep.history[0].retell?.covered.length === 3, "report shows the retelling");
+ok(rep.history[0].fluency?.paras === 1, "report shows the read-aloud");
 ok(rep.history[0].wrong.length === 2 && !rep.history[0].wrong.some((w) => w.ability === "预测"), "report lists the wrong answers (a different prediction is not one)");
 ok(rep.radar.some((r) => r.ability === "locate" && r.total === 1), "回文定位 on the radar");
 const pp = await call("parent", "GET", "/api/parent/passport");

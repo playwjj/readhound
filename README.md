@@ -117,6 +117,11 @@ practice). The pre-reading task comes in one object with its question.
   bones. The only live model call on the reading path: two per session.
   `@cf/openai/whisper` (handles iPad AAC); `STT_MODEL` overrides.
 
+- **大声朗读** (phase 3) — 🎙 on any paragraph: speech recognition, then a
+  toneless-pinyin alignment (LCS) with the paragraph's corrected pinyin,
+  so a homophone written by the recogniser is never a reading error.
+  Shows accuracy, characters per minute and the words to practise
+  (tap to hear); 15 paragraphs a day; parent report shows the averages.
 - **AI 定制故事** (§11) — on demand (optionally starring the child; hero
   set in settings) or automatically when fewer than two unread articles
   suit the child (cron, max one a day). Each story targets due-review

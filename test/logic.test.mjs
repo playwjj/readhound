@@ -372,3 +372,18 @@ test("isQuotaError recognises the Workers AI daily allocation error", () => {
   assert.ok(!isQuotaError(new Error("5028: model deprecated")));
   assert.ok(!isQuotaError(new Error("q1: bad prompt")));
 });
+
+import { compareReading } from "../src/lib/fluency.js";
+test("fluency: homophones from the recogniser are not reading errors; skipped words are", () => {
+  const p = "阿嗅是一只小猎犬，耳朵长长的，鼻子特别灵。";
+  const py = annotate(p);
+  // recogniser wrote 阿秀 / 小獵犬 (traditional) / 耳多: same syllables → all correct
+  const perfect = compareReading(p, py, "阿秀是一隻小獵犬耳多長長的鼻子特別靈", 6000);
+  assert.equal(perfect.accuracy, 1);
+  assert.equal(perfect.missed.length, 0);
+  // skipped 耳朵长长的
+  const skipped = compareReading(p, py, "阿嗅是一只小猎犬鼻子特别灵", 5000);
+  assert.deepEqual(skipped.practise, ["耳朵长长的"]);
+  assert.equal(skipped.accuracy, Math.round((13 / 18) * 100) / 100);
+  assert.equal(perfect.cpm, Math.round(18 / 0.1));
+});

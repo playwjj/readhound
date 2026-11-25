@@ -8,9 +8,10 @@ import { ensureGlosses, enqueueGenerated } from "./pipeline.js";
 import {
   cnDate, addDays, rankCandidates, adaptTarget, verdict, srsUpdate, sampleLevel, scoreAssessment,
   ASSESS_LEVELS, ASSESS_PER_LEVEL, LEVEL_NAMES, BONES, puppyStage, mapPosition, medalsFor, streakFrom, MAX_FREEZES,
-  eyeCare, skillsFor, MAX_ATTEMPTS, RETELL_PASS, RETELL_MAX,
+  eyeCare, skillsFor, MAX_ATTEMPTS, RETELL_PASS, RETELL_MAX, FLUENCY_DAILY,
 } from "./lib/logic.js";
 import { openChest } from "./data/surprises.js";
+import { compareReading } from "./lib/fluency.js";
 import { GENRE_NAMES, ABILITY_NAMES, transcribe, assessRetell, isQuotaError } from "./lib/ai.js";
 
 const MAX_NEW_CARDS = 8;
@@ -245,6 +246,7 @@ export async function startSession(env, ctx, { extra = false } = {}) {
     }),
     sections: sections.map((q) => ({ id: q.id, prompt: q.prompt, options: JSON.parse(q.options), ...safeJSON(q.meta, {}) })),
     // the key points stay on the server: the child retells freely
+    readAloud: has("readaloud"),
     retell: retellQ ? { points: JSON.parse(retellQ.options).length, triesLeft: Math.max(0, RETELL_MAX - retells) } : null,
     charQuiz: plan.filter((p) => p.quiz).map((p, i) => ({
       char: p.char, word: gl.get(p.char)?.word || null, review: !!p.review,
@@ -528,6 +530,39 @@ export async function retell(env, id, request) {
     covered: r.covered, missed: points.filter((p) => !r.covered.includes(p)),
     passed, level: passed ? 3 : s.level, bones, triesLeft: RETELL_MAX - tries - 1,
   };
+}
+
+/**
+ * 朗读流利度 (phase 3): one paragraph read aloud → speech recognition →
+ * toneless-pinyin comparison with the paragraph (homophones are not errors).
+ */
+export async function fluency(env, id, request) {
+  const s = await ownSession(env, id);
+  const url = new URL(request.url);
+  const para = Number(url.searchParams.get("para"));
+  const ms = Math.max(1000, Math.min(Number(url.searchParams.get("ms")) || 0, 5 * 60000));
+  const a = await first(env, "SELECT body, pinyin FROM articles WHERE id = ?", s.article_id);
+  const paras = paragraphs(a.body);
+  if (!(Number.isInteger(para) && para >= 0 && para < paras.length)) throw new HttpError(400, "bad paragraph");
+  const today = cnDate();
+  const used = (await first(env, "SELECT COUNT(*) n FROM fluency_reads WHERE at >= ?", `${addDays(today, -1)} 16:00:00`)).n; // since 00:00 Shanghai
+  if (used >= FLUENCY_DAILY) throw new HttpError(429, "今天已经读了好多段啦，嗓子休息一下，明天再读给小猎犬听");
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length < 2000) throw new HttpError(400, "录音太短了，再读一遍吧");
+  if (bytes.length > 6 * 1024 * 1024) throw new HttpError(413, "录音太长了");
+  let transcript;
+  try {
+    transcript = await transcribe(env, bytes);
+  } catch (e) {
+    if (isQuotaError(e)) throw new HttpError(503, "小猎犬今天听了太多，有点累了，明天再读给它听吧");
+    throw e;
+  }
+  const py = safeJSON(a.pinyin, [])[para] || "";
+  const r = compareReading(paras[para], py, transcript, ms);
+  if (countHan(transcript) < Math.min(6, r.total / 3)) return { tooShort: true, message: "小猎犬没听清，靠近一点、大声一点再读一遍？" };
+  await run(env, "INSERT INTO fluency_reads (session_id, para, accuracy, cpm, missed, transcript) VALUES (?, ?, ?, ?, ?, ?)",
+    id, para, r.accuracy, r.cpm, JSON.stringify(r.practise), transcript);
+  return { ...r, transcript, left: FLUENCY_DAILY - used - 1 };
 }
 
 /** Tapping a character for help is a gentle signal (§5 点读回退): review it sooner. */

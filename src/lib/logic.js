@@ -273,6 +273,7 @@ export function assessContinue(levelResults) {
 export const BONES = { daily: 10, extra: 5, accuracy: 3, charQuiz: 2, retell: 3, extraCapPerDay: 1 };
 export const RETELL_PASS = 0.6; // share of key points told → 完成复述（优秀）
 export const RETELL_MAX = 2; // live model calls per session
+export const FLUENCY_DAILY = 15; // paragraphs read aloud per day (speech recognition calls)
 
 export const PUPPY_STAGES = [
   { min: 0, name: "小奶狗", key: "pup" },
@@ -364,6 +365,7 @@ export function skillsFor(completed, every = 5) {
     { key: "locate", name: "回文定位", desc: "在原文中点出依据句", at: every * 4, phase: 2 },
     { key: "summarise", name: "概括段意", desc: "每段说了什么，拼成文章地图", at: every * 5, phase: 2 },
     { key: "retell", name: "语音复述", desc: "读完用自己的话讲一遍", at: every * 6, phase: 2 },
+    { key: "readaloud", name: "大声朗读", desc: "把一段读给小猎犬听，看看读得准不准、顺不顺", at: every * 7, phase: 3 },
   ].map((s) => ({ ...s, unlocked: s.at !== null && completed >= s.at, need: s.at === null ? null : Math.max(0, s.at - completed) }));
 }
 

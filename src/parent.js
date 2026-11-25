@@ -29,6 +29,9 @@ export async function report(env) {
   const retellRows = history.length
     ? await all(env, `SELECT session_id, transcript, covered, total, feedback FROM retells WHERE session_id IN (${history.map(() => "?").join(",")}) ORDER BY id`, ...history.map((h) => h.id))
     : [];
+  const fluencyRows = history.length
+    ? await all(env, `SELECT session_id, COUNT(*) n, AVG(accuracy) acc, AVG(cpm) cpm FROM fluency_reads WHERE session_id IN (${history.map(() => "?").join(",")}) GROUP BY session_id`, ...history.map((h) => h.id))
+    : [];
   const settings = await getSettings(env);
   const st = await streakInfo(env, today, settings);
   const due = await first(env, "SELECT COUNT(*) n FROM chars WHERE status IN ('seen','familiar') AND due_at <= ?", today);
@@ -50,6 +53,10 @@ export async function report(env) {
       taps: h.taps, tapped: h.tapped, accuracy: h.accuracy, charOk: h.char_ok, charTotal: h.char_total, bones: h.bones,
       title: h.title, articleId: h.article_id, chars: h.char_count, genre: GENRE_NAMES[h.genre] || h.genre,
       verdict: safeJSON(h.verdict, null),
+      fluency: (() => {
+        const f = fluencyRows.find((x) => x.session_id === h.id);
+        return f ? { paras: f.n, accuracy: Math.round(f.acc * 100), cpm: Math.round(f.cpm) } : null;
+      })(),
       retell: (() => {
         const r = retellRows.filter((x) => x.session_id === h.id).pop();
         return r ? { transcript: r.transcript, covered: safeJSON(r.covered, []), total: r.total, feedback: r.feedback } : null;

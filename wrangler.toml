@@ -15,6 +15,7 @@ run_worker_first = ["/api/*"]
 binding = "DB"
 database_name = "readhound"
 database_id = "61aebbb2-33df-4985-9dc2-48f053f67209"
+migrations_dir = "db/migrations"
 
 # Pre-generated read-aloud audio files
 [[r2_buckets]]

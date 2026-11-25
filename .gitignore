@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+# The reading corpus is private family data: it lives in D1/R2 only,
+# and local exports or staging copies must never be committed.
+data/
+*.sqlite
+*.sqlite3

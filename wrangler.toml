@@ -1,0 +1,35 @@
+# ReadHound — Cloudflare Worker configuration (dc2926 account)
+name = "readhound"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Web app (PWA) static assets, served by the Worker
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# Structured data: articles, character archive, known-character set,
+# reading sessions and answers. Create with: npm run db:create
+# then paste the returned database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "readhound"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Pre-generated read-aloud audio files
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "readhound-audio"
+
+# Workers AI: suitability judgement, glosses, question generation,
+# retelling assessment; MeloTTS read-aloud; Whisper speech-to-text.
+[ai]
+binding = "AI"
+
+# Ingestion + pre-generation + daily pick
+[triggers]
+crons = ["30 21 * * *"]
+
+[vars]
+# Placeholder domain until the custom domain is attached
+APP_NAME = "字游记"

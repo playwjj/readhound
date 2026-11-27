@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = {
   bedtime: "21:00", // after this: listen-only (no lit-screen reading)
   wake_time: "06:00",
   interests: [],
+  pinyin_rules: 0, // version of the particle rules stored pinyin has been through (pipeline.refreshParticles)
   weekly_webhook: "", // 家长周报: chat-bot webhook (企业微信/钉钉/飞书/通用), pushed Monday mornings
   weekly_sent: null, // Monday of the week last pushed
   interests_by_child: null, // date the child last chose its own interests (null: home asks once)

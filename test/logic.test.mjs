@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { articleMetrics, hardScreen, sentences, newCharsFor, rankOf, gradeOf, paragraphs, normalise, newTier, VOLUME_END, textbookInfo, splitSentences, locateSentence } from "../src/lib/text.js";
-import { annotate, toneVariants, pinyinChoices, polyphonesIn, applyFixes } from "../src/lib/pinyin.js";
+import { annotate, toneVariants, pinyinChoices, polyphonesIn, applyFixes, fixParticles } from "../src/lib/pinyin.js";
 import {
   verdict, srsUpdate, rankCandidates, adaptTarget, scoreAssessment, sampleLevel, streakFrom, addDays,
   eyeCare, skillsFor, medalsFor, puppyStage, cnDate, pickChoices, dueReviews, mapState, regionOf, weekStart, digestText, webhookPayload, levelChars, levelSize, levelReached, ASSESS_LEVELS,
@@ -527,4 +527,52 @@ test("weekly digest: week start, text, webhook formats", () => {
   assert.deepEqual(webhookPayload("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", "hi"), { msgtype: "text", text: { content: "hi" } });
   assert.deepEqual(webhookPayload("https://open.feishu.cn/open-apis/bot/v2/hook/x", "hi"), { msg_type: "text", content: { text: "hi" } });
   assert.deepEqual(webhookPayload("https://example.com/hook", "hi"), { text: "hi" });
+});
+
+// ---------------------------------------------------------------- particle readings (production samples 2026-11-27)
+/** The reading annotate() gives the n-th `ch` in `text`. */
+function readingIn(text, ch, nth = 0) {
+  const syl = annotate(text).split(" ");
+  let h = 0, seen = 0;
+  for (const c of text) {
+    if (!/\p{Script=Han}/u.test(c)) continue;
+    if (c === ch && seen++ === nth) return syl[h];
+    h++;
+  }
+  return null;
+}
+const cases = [
+  ["他跑得飞快", "得", 0, "de"], ["她累得腰都直不起来", "得", 0, "de"], ["日子过得真安稳", "得", 0, "de"],
+  ["他觉得太阳是天上最亮的", "得", 0, "de"], ["他忽然得了急病", "得", 0, "dé"], ["我们一定要得到它", "得", 0, "dé"],
+  ["还得假装着哼哼", "得", 0, "děi"], ["就是别得罪父亲", "得", 0, "dé"], ["这在很难得！", "得", 0, "dé"],
+  ["他等不得了，心里想", "得", 0, "dé"], ["他恨不得就看见", "得", 0, "de"], ["受得了。", "了", 0, "liǎo"],
+  ["风呼呼地吹", "地", 0, "de"], ["他慢慢地走回家", "地", 0, "de"], ["小心翼翼地用棍子", "地", 0, "de"], ["大胆地跳了过去", "地", 0, "de"],
+  ["我们一个一个地看", "地", 0, "de"], ["他倒在地上", "地", 0, "dì"], ["滋润着大地。", "地", 0, "dì"], ["用脚踩着地。", "地", 0, "dì"],
+  ["最高的地方", "地", 0, "dì"], ["淹没了田地。", "地", 0, "dì"], ["烤得地面发烫", "地", 0, "dì"],
+  ["他看着手中的泥", "着", 0, "zhe"], ["他白瞪着眼，望着远方", "着", 0, "zhe"], ["里面睡着一个巨人", "着", 0, "zhe"],
+  ["一时寻不着东街的汪大夫", "着", 0, "zháo"], ["心里很着急", "着", 0, "zháo"], ["也用不着到时候就", "着", 0, "zháo"],
+  ["是一件很了不起的事", "了", 0, "liǎo"], ["过不了几个月", "了", 0, "liǎo"], ["他『愿意』了。", "了", 0, "le"], ["他等不得了，心里想", "了", 0, "le"],
+  ["升上来的只不过十五个", "只", 0, "zhǐ"], ["有两只耳朵", "只", 0, "zhī"], ["叫来了几只神鸟", "只", 0, "zhī"], ["这只是一个开始", "只", 0, "zhǐ"],
+  ["也不应该都一样", "不", 0, "bù"], ["也不应该都一样", "一", 0, "yí"], ["一定要试一试", "一", 0, "yí"], ["一定要试一试", "一", 1, "yi"],
+  ["我们一个一个地看", "一", 1, "yí"], ["有一个一年级的小孩", "一", 1, "yī"], ["第一名", "一", 0, "yī"], ["一些人", "一", 0, "yì"],
+  ["来巡警好不好？", "不", 0, "bu"], ["不去", "不", 0, "bú"], ["不好", "不", 0, "bù"],
+];
+for (const [text, ch, nth, want] of cases) {
+  test(`particles: ${text} → ${ch}${nth ? `#${nth + 1}` : ""} ${want}`, () => assert.equal(readingIn(text, ch, nth), want));
+}
+
+test("fixParticles: only the listed characters change; misaligned input is left alone", () => {
+  assert.equal(fixParticles("跑得快，地上", "pǎo dé kuài dì shàng", { only: new Set(["地"]) }), "pǎo dé kuài dì shàng");
+  assert.equal(fixParticles("跑得快", "pǎo dé kuài", { only: new Set(["得"]) }), "pǎo de kuài");
+  assert.equal(fixParticles("跑得快", "pǎo dé", {}), "pǎo dé");
+});
+test("particles: 着手 / 为大家着想 stay zhuó", () => {
+  assert.equal(readingIn("他马上着手去做", "着"), "zhuó");
+  assert.equal(readingIn("要为大家着想", "着"), "zhuó");
+});
+test("particles: regressions found on the production dry run", () => {
+  assert.equal(readingIn("天和地刚刚分开", "地"), "dì");
+  assert.equal(readingIn("睡了一万八千年", "一"), "yí");
+  assert.equal(readingIn("他忽然得了急病", "了"), "le");
+  assert.equal(readingIn("这苦你受得了吗", "了"), "liǎo");
 });

@@ -5,7 +5,7 @@ import { configured, roleForPin, issue, clear, rolesOf, throttled, noteFail, not
 import * as child from "./child.js";
 import * as parent from "./parent.js";
 import * as curriculum from "./curriculum.js";
-import { drain } from "./pipeline.js";
+import { drain, refreshParticles } from "./pipeline.js";
 import { cnDate } from "./lib/logic.js";
 import { first } from "./db.js";
 
@@ -150,6 +150,8 @@ export default {
    * article ahead of time so its glosses are generated before the child opens it.
    */
   async scheduled(event, env, ctx) {
+    const fixedPy = await refreshParticles(env).catch((e) => console.warn("[cron] particle refresh failed", e?.message));
+    if (fixedPy) console.log("[cron] particle readings corrected", JSON.stringify(fixedPy));
     const log = await drain(env, 10 * 60000, 120);
     if (log.length) console.log("[cron] pipeline", log.join(" | "));
     const today = cnDate();

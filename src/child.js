@@ -434,7 +434,9 @@ async function planChars(env, a, today) {
   const review = dueRows.map((r) => r.char).filter((ch) => a.uniq.includes(ch) && !newOnes.includes(ch)).slice(0, MAX_QUIZ_REVIEW);
   const glossRows = await all(env, "SELECT char, pinyin FROM glosses WHERE article_id = ?", a.id);
   const gl = new Map(glossRows.map((g) => [g.char, g.pinyin]));
-  const py = (ch) => gl.get(ch) || readingOf(ch);
+  // the quiz teaches the dictionary reading: 一 yī, 不 bù (not the tone-changed one of a context)
+  const BASE_READING = { 一: "yī", 不: "bù" };
+  const py = (ch) => BASE_READING[ch] || gl.get(ch) || readingOf(ch);
   return [
     ...newOnes.map((ch, i) => ({ char: ch, py: py(ch), review: false, quiz: i < MAX_QUIZ_NEW })),
     ...review.map((ch) => ({ char: ch, py: py(ch), review: true, quiz: true })),

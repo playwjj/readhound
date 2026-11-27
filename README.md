@@ -121,6 +121,15 @@ Daily choice and question review:
   table (reading days, articles, characters, first-try rate, known
   characters per month).
 
+- **Particle readings** — pinyin-pro misreads the structural particles in
+  running text (跑得 dé, 慢慢地 dì, 看着 zhuó, 只不过 zhī, 不应该 bú; on the
+  production articles of 2026-11-27: 66 wrong syllables in 14 articles), and
+  those characters skip the model check. `fixParticles` (src/lib/pinyin.js)
+  corrects 得/地/着/了/只 and the 一/不 tone sandhi by rule from the
+  neighbouring characters; stored articles are corrected once by the cron
+  (`PINYIN_RULES` version, parent fixes re-applied). The char quiz teaches
+  the dictionary readings 一 yī / 不 bù.
+
 Phase 2 skills (unlock one every `skill_days` completed readings, after
 the phase-1 ones; `skill_days: 0` unlocks all):
 

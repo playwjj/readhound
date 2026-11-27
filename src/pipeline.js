@@ -3,7 +3,7 @@
 //   (generate →) metrics → screen → pinyin → polyphones → encounters → glosses → questions → skills → audio → ready
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet } from "./db.js";
 import { normalise, paragraphs, articleMetrics, hardScreen, rankOf, CORE_RANK, MAX_RANK, VOLUME_END, LEVEL_ORDER, newCharsFor, charCounts, countHan } from "./lib/text.js";
-import { annotate, readingAt, readingOf, polyphonesIn, applyFixes } from "./lib/pinyin.js";
+import { annotate, readingAt, readingOf, polyphonesIn, applyFixes, fixParticles, PARTICLE_CHARS } from "./lib/pinyin.js";
 import { screenArticle, glossChars, makeQuestions, makeSkills, tts, checkPolyphones, writeStory, rewriteStory, GENRES, isQuotaError, utcDay,
   validateScreen, validateGlosses, validateQuestions, validateSkills, NARRATIVE } from "./lib/ai.js";
 import { cnDate, addDays } from "./lib/logic.js";
@@ -432,6 +432,35 @@ export async function reapplyFix(env, word) {
     n++;
   }
   return n;
+}
+
+/**
+ * Stored pinyin predating the particle rules (得/地/着/了/一/不, see
+ * fixParticles): corrected once, keeping the model's and the parent's other
+ * readings. Bump PINYIN_RULES when the rules change; the cron re-runs it.
+ */
+export const PINYIN_RULES = 1;
+export async function refreshParticles(env) {
+  const s = await getSettings(env);
+  if ((s.pinyin_rules || 0) >= PINYIN_RULES) return null;
+  const rows = await all(env, "SELECT id, body, pinyin FROM articles WHERE pinyin IS NOT NULL");
+  let articles = 0, syllables = 0;
+  for (const r of rows) {
+    const paras = paragraphs(r.body);
+    const py = safeParse(r.pinyin);
+    if (!py) continue;
+    const out = paras.map((p, i) => applyFixes(p, fixParticles(p, py[i] || "", { only: PARTICLE_CHARS }), s.pinyin_fixes));
+    const changed = out.reduce((n, x, i) => n + x.split(" ").filter((y, k) => y !== (py[i] || "").split(" ")[k]).length, 0);
+    if (!changed) continue;
+    await run(env, "UPDATE articles SET pinyin = ? WHERE id = ?", JSON.stringify(out), r.id);
+    articles++;
+    syllables += changed;
+  }
+  await setSetting(env, "pinyin_rules", PINYIN_RULES);
+  return { articles, syllables };
+}
+function safeParse(x) {
+  try { return JSON.parse(x); } catch { return null; }
 }
 
 /** Parent actions on an article. */

@@ -21,10 +21,15 @@ export const DEFAULT_SETTINGS = {
   bedtime: "21:00", // after this: listen-only (no lit-screen reading)
   wake_time: "06:00",
   interests: [],
+  weekly_webhook: "", // 家长周报: chat-bot webhook (企业微信/钉钉/飞书/通用), pushed Monday mornings
+  weekly_sent: null, // Monday of the week last pushed
+  interests_by_child: null, // date the child last chose its own interests (null: home asks once)
   rewards: [
+    // a small one first: the first redemption lands on day 2–3, not week 2
+    { bones: 20, item: "挑明天读什么题材" },
+    { bones: 25, item: "今晚的睡前故事由你选" },
     { bones: 60, item: "多玩 30 分钟" },
     { bones: 100, item: "周末活动由你挑" },
-    { bones: 150, item: "指定明天读什么题材" },
   ],
   audio: true, // pre-generate read-aloud when a TTS_MODEL is configured (else device voice)
   freezes: 0,

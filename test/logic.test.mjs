@@ -4,7 +4,7 @@ import { articleMetrics, hardScreen, sentences, newCharsFor, rankOf, gradeOf, pa
 import { annotate, toneVariants, pinyinChoices, polyphonesIn, applyFixes } from "../src/lib/pinyin.js";
 import {
   verdict, srsUpdate, rankCandidates, adaptTarget, scoreAssessment, sampleLevel, streakFrom, addDays,
-  eyeCare, skillsFor, medalsFor, puppyStage, cnDate, levelChars, levelSize, levelReached, ASSESS_LEVELS,
+  eyeCare, skillsFor, medalsFor, puppyStage, cnDate, pickChoices, dueReviews, mapState, regionOf, weekStart, digestText, webhookPayload, levelChars, levelSize, levelReached, ASSESS_LEVELS,
 } from "../src/lib/logic.js";
 import { extractJSON, validateQuestions, validateGlosses, validateScreen, validatePolyphones, validateSkills, validateRetell } from "../src/lib/ai.js";
 import { splitBulk, wikiHtmlToText, suggest } from "../src/parent.js";
@@ -109,15 +109,42 @@ test("verdict: 50% first try, then found every answer after re-reading → recov
   assert.equal(v.recovered, true);
 });
 
-test("verdict: guessing (25% first try) cannot get through by retries", () => {
+test("verdict: low first try, then found every answer after careful reading → 找回答案 (found)", () => {
   const v = verdict({ paras, dwell: okDwell, activeMs: 180000, answers: qs([[1], [0, 1], [0, 1], [0, 0, 1]]), charQuiz: [] });
-  assert.equal(v.completed, false);
+  assert.equal(v.completed, true);
+  assert.equal(v.tier, "found");
+  assert.equal(v.accuracy, 0.25); // the report still sees the first-try rate
 });
 
-test("verdict: char quiz failing blocks completion", () => {
+test("verdict: low first try and skimmed → not through, even with every answer found", () => {
+  const v = verdict({ paras, dwell: [500, 500, 500], activeMs: 20000, answers: qs([[1], [0, 1], [0, 1], [0, 0, 1]]), charQuiz: [] });
+  assert.equal(v.completed, false);
+  assert.match(v.hint, /慢慢再读/);
+  assert.equal(v.gates.reading.ok, false);
+});
+
+test("verdict: every try used up and the body read → 读完也算数 (effort), never a dead end", () => {
+  const v = verdict({ paras, dwell: okDwell, activeMs: 400000, answers: qs([[1], [0, 0, 0], [0, 0, 0], [0, 0, 1]]), charQuiz: [{ correct: 0 }, { correct: 0 }] });
+  assert.equal(v.completed, true);
+  assert.equal(v.tier, "effort");
+});
+
+test("verdict: tries left → points at the paragraphs, counts what is missing", () => {
+  const v = verdict({ paras, dwell: okDwell, activeMs: 180000, answers: qs([[1], [0, 0], [0, 1], [1]]), charQuiz: [] });
+  assert.equal(v.completed, false);
+  assert.match(v.hint, /还有 1 道题没找到答案.*第 2 段/);
+  assert.equal(v.fails, 1);
+});
+
+test("verdict: third unsuccessful finish with the body read → effort", () => {
+  const v = verdict({ paras, dwell: okDwell, activeMs: 180000, answers: qs([[1], [0, 0], [0, 1], [1]]), charQuiz: [], fails: 2 });
+  assert.equal(v.tier, "effort");
+});
+
+test("verdict: char quiz failing blocks completion and says how many are needed", () => {
   const v = verdict({ paras, dwell: okDwell, activeMs: 120000, answers: qs([[1], [1], [1], [1]]), charQuiz: [{ correct: 0 }, { correct: 0 }, { correct: 1 }] });
   assert.equal(v.completed, false);
-  assert.match(v.hint, /生字/);
+  assert.match(v.hint, /生字小测对了 1\/3 个，要对 2 个/);
 });
 
 // ---------------------------------------------------------------- SRS
@@ -208,6 +235,9 @@ test("skills unlock in order; phase-2 skills stay locked", () => {
   assert.equal(s.find((x) => x.key === "purpose").unlocked, true);
   assert.equal(s.find((x) => x.key === "guess").unlocked, false);
   assert.equal(s.find((x) => x.key === "retell").unlocked, false);
+  assert.equal(s.find((x) => x.key === "readaloud").unlocked, true);
+  assert.equal(skillsFor(10, 5).find((x) => x.key === "retell").unlocked, true);
+  assert.equal(skillsFor(0, 5).find((x) => x.key === "readaloud").unlocked, false);
 });
 
 test("medals and puppy stages", () => {
@@ -215,8 +245,8 @@ test("medals and puppy stages", () => {
   assert.ok(m.includes("medal:streak7") && m.includes("medal:read10") && m.includes("medal:chars100") && m.includes("medal:words10000"));
   assert.ok(!m.includes("medal:chars150"));
   assert.equal(puppyStage(0).key, "pup");
-  assert.equal(puppyStage(7).key, "young");
-  assert.equal(puppyStage(6).next.need, 1);
+  assert.equal(puppyStage(3).key, "young");
+  assert.equal(puppyStage(2).next.need, 1);
 });
 
 // ---------------------------------------------------------------- AI validation
@@ -437,4 +467,64 @@ test("pick: the next part of a story already begun ranks first among equals", ()
   const base = { uniq: "小猫在河边钓鱼蜻蜓", difficulty: 20, genre: "story", tags: [], charCount: 800 };
   const r = rankCandidates([{ ...base, id: 1, title: "甲" }, { ...base, id: 2, title: "乙（二）", continues: true }], ctx);
   assert.equal(r[0].id, 2);
+});
+
+// ---------------------------------------------------------------- daily choice & review
+test("pickChoices: same tier, close in score, different genres first", () => {
+  const r = [
+    { id: 1, tier: "pass", score: 50, genre: "story" },
+    { id: 2, tier: "pass", score: 48, genre: "story" },
+    { id: 3, tier: "pass", score: 40, genre: "science" },
+    { id: 4, tier: "review", score: 49, genre: "myth" },
+    { id: 5, tier: "pass", score: 10, genre: "myth" },
+  ];
+  assert.deepEqual(pickChoices(r).map((c) => c.id), [3, 2]);
+  assert.deepEqual(pickChoices([r[0]]), []);
+});
+
+test("dueReviews: due the day after, done when right or after 3 tries, newest first", () => {
+  const today = "2026-12-05";
+  const rows = [
+    { questionId: 1, date: "2026-12-04", reviews: [] },
+    { questionId: 2, date: "2026-12-01", reviews: [{ date: "2026-12-02", correct: 1 }] },
+    { questionId: 3, date: "2026-12-01", reviews: [{ date: "2026-12-02", correct: 0 }, { date: "2026-12-03", correct: 0 }, { date: "2026-12-04", correct: 0 }] },
+    { questionId: 4, date: "2026-12-03", reviews: [{ date: "2026-12-05", correct: 0 }] },
+    { questionId: 5, date: "2026-12-05", reviews: [] },
+    { questionId: 6, date: "2026-12-02", reviews: [{ date: "2026-12-03", correct: 0 }] },
+  ];
+  assert.deepEqual(dueReviews(rows, today).map((r) => r.questionId), [1, 6]);
+});
+
+test("map: regions lit by genre, tower floors at 3 reads, unknown genres go to the castle", () => {
+  const m = mapState({ myth: 1, story: 2, life: 1, science: 12, weird: 1 });
+  const by = Object.fromEntries(m.regions.map((r) => [r.key, r]));
+  assert.equal(by.myth.count, 1);
+  assert.equal(by.story.count, 4); // story + life + unknown
+  assert.equal(by.science.lit, 10);
+  assert.equal(by.science.full, true);
+  assert.equal(m.explored, 3);
+  assert.equal(m.tower.floors, 2);
+  assert.ok(m.unexplored.includes("诗词云岛"));
+  assert.equal(regionOf("myth").name, "神话之河");
+});
+
+test("pick: an unvisited region gets a nudge", () => {
+  const base = { known: new Set(), due: new Set(), upcoming: new Set(), targetNew: 0 };
+  const c = [{ id: 1, uniq: "", genre: "story", charCount: 700 }, { id: 2, uniq: "", genre: "science", charCount: 700 }];
+  const r = rankCandidates(c, { ...base, genreCounts: { story: 3 } });
+  assert.equal(r[0].id, 2);
+  assert.match(r[0].reason, /科学港湾/);
+});
+
+test("weekly digest: week start, text, webhook formats", () => {
+  assert.equal(weekStart("2026-11-27"), "2026-11-23"); // Friday → Monday
+  assert.equal(weekStart("2026-11-23"), "2026-11-23");
+  assert.equal(weekStart("2026-11-29"), "2026-11-23"); // Sunday
+  const t = digestText({ name: "小读者", from: "2026-11-16", to: "2026-11-22", daysRead: 5, articles: 6, chars: 4200, minutes: 75, knownNow: 1200, knownDelta: 14, firstTry: 0.72, firstTryPrev: 0.6, weak: { name: "推断", rate: 50 }, tip: "多读故事" });
+  assert.match(t, /读了 5\/7 天/);
+  assert.match(t, /\+14/);
+  assert.match(t, /72%，比上周↑/);
+  assert.deepEqual(webhookPayload("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", "hi"), { msgtype: "text", text: { content: "hi" } });
+  assert.deepEqual(webhookPayload("https://open.feishu.cn/open-apis/bot/v2/hook/x", "hi"), { msg_type: "text", content: { text: "hi" } });
+  assert.deepEqual(webhookPayload("https://example.com/hook", "hi"), { text: "hi" });
 });

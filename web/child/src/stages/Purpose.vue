@@ -1,13 +1,13 @@
 <!-- 2. 带着问题读: the pre-reading task. -->
 <script setup>
-import { reading } from "../reading.js";
+import { reading, progressAt } from "../reading.js";
 import PageHead from "../components/PageHead.vue";
 defineEmits(["done"]);
 const R = reading.R;
 </script>
 
 <template>
-  <PageHead :title="R.article.title" :pct="0.08" />
+  <PageHead :title="R.article.title" :pct="progressAt('warmup', 0.9)" />
   <div class="card center" style="padding: 28px 22px">
     <div style="font-size: 56px">🔍</div>
     <h2>接到一个侦察任务！</h2>

@@ -2,7 +2,7 @@
   The reading flow. Each step is a screen (a stage component) that reports
   `done` when the child finishes it; the flow below then decides the next one:
 
-    生字预热 → 听音找字 → 读前任务 → 分段阅读 → 闯关题 → 回文定位 → 文章地图
+    错题回炉 → 生字预热 → 听音找字 → 读前任务 → 分段阅读 → 闯关题 → 回文定位 → 文章地图
     → 生字小测 → 结算 (→ 复述 / 回看再答 / 慢慢再读 / 再见一面)
 
   Leaving the page (home button, back gesture) saves progress and stops audio.
@@ -12,8 +12,10 @@ import { shallowRef, onMounted, onBeforeUnmount } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, toast } from "../lib/api.js";
 import { stopAudio } from "../lib/voice.js";
+import { restPoint } from "../lib/clock.js";
 import { app } from "../state.js";
-import { reading, prepare, begin, leave, flush, settled } from "../reading.js";
+import { reading, prepare, begin, leave, flush, settled, progressAt } from "../reading.js";
+import Review from "../stages/Review.vue";
 import Warmup from "../stages/Warmup.vue";
 import MatchGame from "../stages/MatchGame.vue";
 import Purpose from "../stages/Purpose.vue";
@@ -38,6 +40,7 @@ let alive = true;
 function present(comp, props = {}, { wide = false } = {}) {
   return new Promise((resolve) => {
     if (!alive) return;
+    restPoint(); // the last step is over: a rest that came due during it starts here
     app.wide = wide;
     screen.value = { comp, props, done: resolve, key: ++seq };
     window.scrollTo(0, 0);
@@ -60,7 +63,11 @@ const R = () => reading.R;
 
 function start() {
   const r = R();
-  if (r.session.level >= 2) return result(null, true);
+  if (r.session.level >= 2) {
+    // from the home card's 讲给小猎犬听
+    if (route.query.retell === "1" && r.retell?.triesLeft > 0) return retellNow();
+    return result(null, true);
+  }
   if (r.eye.listenOnly) return present(ListenOnly);
   const allQ = [...r.questions, ...(r.guess ? [r.guess] : []), ...r.locates, ...r.sections];
   if (allQ.length && allQ.every((q) => settled(r, q.id))) return charQuiz();
@@ -70,6 +77,8 @@ function start() {
 
 async function warmup() {
   R().stage = "warmup";
+  const rv = R().review || [];
+  for (let n = 0; n < rv.length; n++) await present(Review, { q: rv[n], n, total: rv.length });
   if (R().newChars.length) {
     await present(Warmup);
     if (R().newChars.length >= 2) await present(MatchGame);
@@ -110,7 +119,7 @@ async function articleMap(secs, retry) {
   const found = {};
   for (let n = 0; n < secs.length; n++) {
     const q = secs[n];
-    const idx = await present(Question, { q: { ...q, abilityName: "概括段意 · 拼文章地图", evidence: q.from }, n, total: secs.length, retry, pct: 0.75 });
+    const idx = await present(Question, { q: { ...q, abilityName: "概括段意 · 拼文章地图", evidence: q.from }, n, total: secs.length, retry, pct: progressAt("quest", 0.8) });
     if (idx != null) found[q.id] = q.options[idx];
   }
   await present(ArticleMap, { found });
@@ -140,6 +149,12 @@ async function finish() {
   // the home behind shows the new state at once (it refreshes as well)
   if (res.verdict?.completed && R().session.daily && app.home) Object.assign(app.home, { todayDone: true, canExtra: true });
   result(res, false);
+}
+
+async function retellNow() {
+  R().stage = "result";
+  await present(Retell);
+  router.push("/");
 }
 
 async function result(res, already) {

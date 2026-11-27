@@ -30,9 +30,12 @@ async function body(request) {
 const routes = [
   // ---- child (parent may also use these)
   ["GET", /^\/api\/home$/, "child", (env, ctx) => child.home(env, ctx)],
+  ["PUT", /^\/api\/interests$/, "child", async (env, ctx, m, req) => child.setInterests(env, await body(req))],
+  ["POST", /^\/api\/pick\/choose$/, "child", async (env, ctx, m, req) => child.choosePick(env, ctx, await body(req))],
   ["POST", /^\/api\/session\/start$/, "child", async (env, ctx, m, req) => child.startSession(env, ctx, await body(req))],
   ["POST", /^\/api\/session\/(\d+)\/progress$/, "child", async (env, ctx, m, req) => child.progress(env, Number(m[1]), await body(req))],
   ["POST", /^\/api\/session\/(\d+)\/answer$/, "child", async (env, ctx, m, req) => child.answer(env, Number(m[1]), await body(req))],
+  ["POST", /^\/api\/session\/(\d+)\/review$/, "child", async (env, ctx, m, req) => child.reviewAnswer(env, Number(m[1]), await body(req))],
   ["POST", /^\/api\/session\/(\d+)\/charquiz$/, "child", async (env, ctx, m, req) => child.charQuiz(env, Number(m[1]), await body(req))],
   ["POST", /^\/api\/session\/(\d+)\/finish$/, "child", (env, ctx, m) => child.finish(env, Number(m[1]))],
   ["POST", /^\/api\/session\/(\d+)\/fluency$/, "child", (env, ctx, m, req) => child.fluency(env, Number(m[1]), req)],
@@ -45,6 +48,7 @@ const routes = [
 
   // ---- parent only
   ["GET", /^\/api\/parent\/report$/, "parent", (env) => parent.report(env)],
+  ["POST", /^\/api\/parent\/digest\/send$/, "parent", (env) => parent.sendDigest(env, { force: true })],
   ["GET", /^\/api\/parent\/articles$/, "parent", (env, ctx, m, req) => parent.listArticles(env, new URL(req.url).searchParams.get("status"))],
   ["POST", /^\/api\/parent\/articles$/, "parent", async (env, ctx, m, req) => parent.addArticle(env, await body(req))],
   ["POST", /^\/api\/parent\/articles\/bulk$/, "parent", async (env, ctx, m, req) => parent.bulkAdd(env, await body(req))],
@@ -153,6 +157,12 @@ export default {
     if (!have) {
       const pick = await child.ensurePick(env, today, null);
       console.log("[cron] pick", today, pick ? `#${pick.article_id} ${pick.reason}` : "none (library empty)");
+    }
+    try {
+      const sent = await parent.maybeSendDigest(env);
+      if (sent?.sent) console.log("[cron] weekly digest pushed");
+    } catch (e) {
+      console.warn("[cron] weekly digest failed", e?.message);
     }
     const gen = await child.maybeAutoGenerate(env);
     if (gen) console.log("[cron] library short of suitable articles: queued a story", gen.id, gen.spec.targets.join(""));

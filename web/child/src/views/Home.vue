@@ -8,14 +8,29 @@ import { useRouter } from "vue-router";
 import { app, refreshHome } from "../state.js";
 import { prepare } from "../reading.js";
 import { cachedSession, store } from "../lib/store.js";
+import { api, toast } from "../lib/api.js";
 import Pup from "../components/Pup.vue";
 
 const router = useRouter();
 const H = computed(() => app.home);
 onMounted(refreshHome);
 
-async function start(extra) {
-  if (await prepare(extra)) router.push({ path: "/read", query: extra ? { extra: 1 } : {} });
+async function start(extra, retell = false) {
+  if (await prepare(extra)) router.push({ path: "/read", query: extra ? { extra: 1 } : retell ? { retell: 1 } : {} });
+}
+// 每日二选一: any of them suits; the one the child picks becomes today's
+const choosing = computed(() => !!H.value?.choices && !H.value.session && !H.value.todayDone && !H.value.eye.listenOnly);
+async function choose(c) {
+  if (!c.current) {
+    try {
+      app.home = await api("POST", "/api/pick/choose", { articleId: c.id });
+      store.set("rh_home", app.home);
+    } catch (e) {
+      if (e.message !== "login") toast(e.offline ? "选文章需要联网，先读推荐的这篇吧" : e.message);
+      return;
+    }
+  }
+  await start(false);
 }
 const offlineCopy = computed(() => app.homeError === "offline" && cachedSession(false));
 
@@ -86,10 +101,24 @@ function restartTest() {
             </div>
           </div>
         </div>
+        <div v-if="H.askInterests" class="card ask-likes">
+          <span>小猎犬想知道：你喜欢读什么样的故事？</span>
+          <button class="soft" @click="router.push('/likes')">告诉它 🐾</button>
+        </div>
         <div class="card today">
           <template v-if="!H.article">
             <div class="title">今天的故事还在准备中</div>
             <p class="meta">请爸爸妈妈在家长页添加文章，晚点再来看看。</p>
+          </template>
+          <template v-else-if="choosing">
+            <div class="muted">今天读哪一篇？你来挑</div>
+            <div class="choices">
+              <Btn v-for="c in H.choices" :key="c.id" class="choice" :action="() => choose(c)">
+                <span class="title">{{ c.title }}</span>
+                <span class="meta">{{ [c.genre, `${c.chars} 字`].filter(Boolean).join(" · ") }}</span>
+              </Btn>
+            </div>
+            <p class="muted" style="font-size: 15px; margin: 10px 0 0">小猎犬都闻过了，哪篇都适合你。</p>
           </template>
           <template v-else>
             <div v-if="H.todayDone" class="done-badge">✓ 今日已通关</div>
@@ -100,6 +129,7 @@ function restartTest() {
             <div class="row center">
               <Btn v-if="!H.todayDone" class="big" :action="() => start(false)">{{ H.session ? "继续阅读" : "开始阅读" }}</Btn>
               <template v-else>
+                <Btn v-if="H.canRetell" class="soft" :action="() => start(false, true)">🎤 讲给小猎犬听 +3🦴</Btn>
                 <Btn class="soft" :action="() => start(false)">再看一遍</Btn>
                 <Btn v-if="H.canExtra && !H.eye.listenOnly" :action="() => start(true)">再读一篇 🦴</Btn>
               </template>
@@ -113,14 +143,12 @@ function restartTest() {
           <div class="stat"><b>{{ H.tamedChars }}</b><span>驯服的生字</span></div>
           <div class="stat"><b>{{ H.knownChars }}</b><span>认识的字</span></div>
         </div>
-        <div class="card map-card">
-          <div class="row"><b>🗺 {{ H.map.region }}</b><span class="spacer" /><span class="muted">第 {{ H.map.node + 1 }} / {{ H.map.perRegion }} 站</span></div>
-          <div class="map-strip">
-            <template v-for="i in H.map.perRegion" :key="i">
-              <div v-if="i > 1" class="path" :class="{ lit: i - 1 <= H.map.node }" />
-              <div class="node" :class="{ lit: i - 1 < H.map.node, here: i - 1 === H.map.node }">{{ i - 1 < H.map.node ? "★" : i }}</div>
-            </template>
+        <div v-if="H.map.regions" class="card map-card" @click="router.push('/map')">
+          <div class="row"><b>🗺 探索了 {{ H.map.explored }} / {{ H.map.regions.length }} 个地区</b><span class="spacer" /><span class="muted">🗼 高塔 {{ H.map.tower.floors }} 层</span></div>
+          <div class="region-dots">
+            <span v-for="r in H.map.regions" :key="r.key" :class="{ lit: r.count }" :title="r.name">{{ r.icon }}</span>
           </div>
+          <div v-if="H.map.unexplored.length" class="muted" style="font-size: 15px">还没去过：{{ H.map.unexplored.slice(0, 3).join("、") }}</div>
         </div>
         <div class="nav">
           <button @click="router.push('/collection')"><span class="ico">📖</span>生字图鉴</button>
@@ -129,6 +157,6 @@ function restartTest() {
         </div>
       </div>
     </div>
-    <div class="foot"><a href="/parent/">家长入口</a></div>
+    <div class="foot"><a href="#/likes">我喜欢读的故事</a> · <a href="/parent/">家长入口</a></div>
   </template>
 </template>

@@ -85,7 +85,12 @@ async function saveFix() {
   <div class="grid2">
     <div class="card">
       <h2>对孩子来说的生字 <span class="pill" :class="tier.cls">{{ tier.text }}</span></h2>
-      <div class="chars-inline">{{ a.newForChild.join("") || "（没有：全都认识）" }}</div>
+      <div v-if="a.newForChild.length <= 40" class="chars-inline">{{ a.newForChild.join(" ") || "（没有：全都认识）" }}</div>
+      <!-- a long list (an article far beyond the child) folds, in rows of ten -->
+      <details v-else>
+        <summary class="muted">{{ a.newForChild.length }} 个，展开看</summary>
+        <div class="chars-grid"><span v-for="c in a.newForChild" :key="c">{{ c }}</span></div>
+      </details>
       <p v-if="a.rareForChild.length" class="muted">生僻字（只给拼音，不作为目标）：{{ a.rareForChild.join("") }}</p>
       <h3>生字卡</h3>
       <table>

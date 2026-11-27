@@ -1,7 +1,7 @@
 <!-- 5. 读后生字小测: pick the reading of a character met today. -->
 <script setup>
 import { ref, computed } from "vue";
-import { reading } from "../reading.js";
+import { reading, progressAt } from "../reading.js";
 import { questApi } from "../lib/api.js";
 import { speak } from "../lib/voice.js";
 import PageHead from "../components/PageHead.vue";
@@ -26,7 +26,7 @@ const cls = (o) => (res.value && o === res.value.pinyin ? "right" : res.value &&
 </script>
 
 <template>
-  <PageHead :title="R.article.title" :pct="0.88 + 0.1 * (n / total)" />
+  <PageHead :title="R.article.title" :pct="progressAt('chars', 0.1 + 0.8 * (n / total))" />
   <div class="card warm-card">
     <div class="muted">{{ retry ? "再见一面" : it.review ? "老朋友复习" : "生字小测" }} {{ n + 1 }}/{{ total }}</div>
     <div class="big">{{ it.char }}</div>

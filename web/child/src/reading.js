@@ -3,10 +3,20 @@
 import { reactive } from "vue";
 import { api, toast } from "./lib/api.js";
 import { store, cacheSession, cachedSession, queueProgress } from "./lib/store.js";
-import { clock, setTick } from "./lib/clock.js";
+import { clock, setTick, restPoint } from "./lib/clock.js";
 import { isPlaying, stopAudio } from "./lib/voice.js";
 
 export const reading = reactive({ R: null });
+
+/**
+ * One progress bar for the whole reading: each part owns a slice of it, and
+ * every screen asks here instead of working out its own percentage.
+ */
+const SPANS = { warmup: [0, 0.1], read: [0.1, 0.55], quest: [0.55, 0.85], chars: [0.85, 1] };
+export function progressAt(part, frac = 0) {
+  const [a, b] = SPANS[part];
+  return a + (b - a) * Math.min(1, Math.max(0, frac));
+}
 
 /** Load a session (button action on home). Returns false if there is nothing to read. */
 export async function prepare(extra) {
@@ -102,6 +112,7 @@ export async function flush() {
 let flushTimer = null;
 const onHide = () => { if (document.visibilityState === "hidden") { flush(); stopAudio(); } };
 export function begin() {
+  clock.holdRest = true; // the rest page waits for the end of a step (restPoint)
   setTick(readingTick);
   clearInterval(flushTimer);
   flushTimer = setInterval(() => reading.R && flush(), 15000);
@@ -109,6 +120,8 @@ export function begin() {
 }
 /** Leaving the reading (home button, back gesture): save and stop everything. */
 export function leave() {
+  clock.holdRest = false;
+  restPoint();
   stopAudio();
   flush();
   clearInterval(flushTimer);

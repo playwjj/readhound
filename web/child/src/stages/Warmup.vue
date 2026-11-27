@@ -1,7 +1,7 @@
 <!-- 1. 生字预热: one card per new character, heard aloud. -->
 <script setup>
 import { ref, watchEffect } from "vue";
-import { reading } from "../reading.js";
+import { reading, progressAt } from "../reading.js";
 import { speak } from "../lib/voice.js";
 import PageHead from "../components/PageHead.vue";
 
@@ -14,7 +14,7 @@ const next = () => (i.value < cards.length - 1 ? i.value++ : emit("done"));
 </script>
 
 <template>
-  <PageHead :title="R.article.title" :pct="0" />
+  <PageHead :title="R.article.title" :pct="progressAt('warmup', 0)" />
   <p class="center muted">读之前，先认识 {{ cards.length }} 个新朋友</p>
   <div class="card warm-card">
     <div class="big">{{ cards[i].char }}</div>

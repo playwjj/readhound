@@ -116,6 +116,11 @@ button.icon { width: 52px; padding: 0; }
 .today { text-align: center; padding: 26px 22px; }
 .today .title { font-size: 28px; font-weight: 700; margin: 6px 0 4px; }
 .today .meta { color: var(--ink-soft); margin-bottom: 18px; }
+/* 每日二选一 */
+.choices { display: grid; gap: 12px; margin-top: 12px; }
+.choices .choice { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 16px; min-height: 76px; background: var(--card); color: var(--ink); box-shadow: var(--shadow); border: 2px solid var(--accent-soft); border-radius: 18px; }
+.choices .choice .title { font-size: 22px; font-weight: 700; margin: 0; }
+.choices .choice .meta { font-size: 15px; color: var(--ink-soft); margin: 0; }
 .done-badge { display: inline-block; background: var(--good-soft); color: var(--good); border-radius: 999px; padding: 4px 14px; font-weight: 600; margin-bottom: 10px; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .stat { background: var(--card); border-radius: 16px; padding: 14px 8px; text-align: center; box-shadow: var(--shadow); }
@@ -134,7 +139,10 @@ button.icon { width: 52px; padding: 0; }
 .path.lit { background: var(--gold); }
 
 .region h3 { margin: 0 0 6px; }
-.region.locked { opacity: 0.45; }
+/* locked: muted, but the words must stay readable */
+.region.locked { background: var(--bg); box-shadow: none; border: 2px dashed var(--line); }
+.region.locked h3 { color: var(--ink-soft); }
+.lock-hint { font-size: 15px; color: var(--ink-soft); margin: 4px 0 0; }
 
 /* ------------------------------------------------------------ PIN pad */
 .pin-wrap { max-width: 360px; margin: 8vh auto 0; text-align: center; }
@@ -169,14 +177,23 @@ button.icon { width: 52px; padding: 0; }
 @keyframes flash { 50% { outline: 4px solid var(--accent); } }
 /* pinyin: one column per character (native ruby lets syllables collide) */
 ruby.hz { display: inline-flex; flex-direction: column-reverse; align-items: center; vertical-align: bottom; min-width: 1em; margin: 0 0.04em; line-height: 1.25; }
-ruby.hz rt { display: block; font-size: 0.48em; line-height: 1.2; color: var(--ink-soft); letter-spacing: 0; user-select: none; white-space: nowrap; font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
-.para.with-py { line-height: 1.5; }
+ruby.hz rt { display: block; font-size: max(0.56em, 13px); line-height: 1.2; color: var(--ink-soft); letter-spacing: 0; user-select: none; white-space: nowrap; font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+.para.with-py { line-height: 1.6; }
 .hz { cursor: pointer; border-radius: 4px; }
 .hz.new { background: var(--new-mark); }
 .hz.review { box-shadow: inset 0 -3px 0 var(--blue); }
 .hz.tapped { background: var(--accent-soft); }
 .hz.miss { background: var(--accent-soft); box-shadow: inset 0 -3px 0 var(--accent); }
 .reader-actions { display: flex; gap: 12px; justify-content: center; margin: 12px 0 24px; flex-wrap: wrap; }
+/* the reading controls stay at the bottom of the screen while paragraphs pile up above */
+.reader-actions.sticky {
+  position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; margin: 0;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  background: var(--card); box-shadow: 0 -4px 16px rgba(70, 50, 110, 0.12);
+}
+.sticky-spacer { height: 120px; }
+.your-turn { flex-basis: 100%; text-align: center; font-size: 18px; color: var(--accent); font-weight: 600; }
+.mode-note { text-align: center; font-size: 15px; margin: 0 0 10px; }
 .mode-pick { display: flex; gap: 8px; justify-content: center; }
 .mode-pick button { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
 .mode-pick button.on { background: var(--accent); color: #fff; }
@@ -271,7 +288,8 @@ ruby.hz rt { display: block; font-size: 0.48em; line-height: 1.2; color: var(--i
 .skill { display: flex; gap: 14px; align-items: center; }
 .skill .badge { width: 54px; height: 54px; border-radius: 16px; display: grid; place-items: center; font-size: 28px; background: var(--accent-soft); flex: none; }
 .skill.locked .badge { background: var(--line); filter: grayscale(1); }
-.skill.locked { opacity: 0.6; }
+.skill.locked { background: var(--bg); box-shadow: none; border: 2px dashed var(--line); }
+.skill.locked b { color: var(--ink-soft); }
 
 /* ------------------------------------------------------------ toast */
 .toast { position: fixed; left: 50%; top: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 20px; border-radius: 999px; z-index: 60; font-size: 17px; }
@@ -338,3 +356,25 @@ body.net button.busy::after {
 @media (prefers-reduced-motion: reduce) {
   .page, .netbar.on, body.net button.busy::after { animation: none; }
 }
+
+/* "almost" page: the three checks and how far along each is */
+.checks { list-style: none; padding: 0; margin: 8px auto 16px; text-align: left; display: inline-block; font-size: 18px; }
+.checks li { margin: 4px 0; color: var(--ink); }
+.checks li.ok { color: var(--good); }
+
+/* 错题回炉: the paragraph that holds the answer */
+.passage { font-size: var(--read-size); line-height: 1.8; background: var(--bg); border-left: 4px solid var(--accent-soft); border-radius: 12px; padding: 12px 16px; margin: 8px 0 14px; }
+
+/* map by genre: one dot per region on home */
+.map-card { cursor: pointer; }
+.region-dots { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 6px; }
+.region-dots span { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; background: var(--bg); border: 2px dashed var(--line); filter: grayscale(1); opacity: 0.75; }
+.region-dots span.lit { background: var(--gold-soft); border: 2px solid var(--gold); filter: none; opacity: 1; }
+.tower { margin-bottom: 14px; }
+
+/* 我喜欢读… */
+.likes { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 10px; margin: 18px 0 22px; }
+.like { flex-direction: column; gap: 4px; min-height: 84px; font-size: 18px; background: var(--card); color: var(--ink); box-shadow: var(--shadow); border: 2px solid transparent; border-radius: 18px; }
+.like .ico { font-size: 28px; line-height: 1; }
+.like.on { border-color: var(--accent); background: var(--accent-soft); }
+.ask-likes { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: space-between; font-size: 18px; }

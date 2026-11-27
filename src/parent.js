@@ -3,7 +3,7 @@
 import { all, first, run, stmt, batch, getSettings, setSetting, knownSet, DEFAULT_SETTINGS } from "./db.js";
 import { enqueue, step, nextPending, requeue, reapplyFix, enqueueGenerated, aiPausedUntil, PAUSED, INGEST_PURPOSES, ingestCallsToday, checkPrepared } from "./pipeline.js";
 import { paragraphs, isHan, newCharsFor, newTier, normalise } from "./lib/text.js";
-import { cnDate, addDays, levelReached } from "./lib/logic.js";
+import { cnDate, addDays, levelReached, weekStart, digestText, webhookPayload } from "./lib/logic.js";
 import { ABILITY_NAMES, GENRE_NAMES, GENRES, utcDay } from "./lib/ai.js";
 import { CLASSICS } from "./data/classics.js";
 import { SHELF } from "./data/shelf.js";
@@ -15,7 +15,14 @@ import { HttpError, safeJSON, snapshot, streakInfo } from "./child.js";
 export async function report(env) {
   const today = cnDate();
   const since = addDays(today, -60);
-  const radarRows = await all(env, "SELECT ability, SUM(correct) c, COUNT(*) n FROM answers WHERE created_at >= ? AND attempt = 1 GROUP BY ability", since);
+  // first tries, plus 错题回炉 answers: a skill practised again can climb
+  const radarRows = await all(env, `SELECT ability, SUM(correct) c, COUNT(*) n FROM (
+      SELECT ability, correct FROM answers WHERE created_at >= ? AND attempt = 1
+      UNION ALL SELECT ability, correct FROM review_answers WHERE created_at >= ?
+    ) GROUP BY ability`, since, since);
+  const reviewRows = await all(env, `SELECT r.correct, r.created_at, q.prompt, q.ability, a.title FROM review_answers r
+      JOIN questions q ON q.id = r.question_id JOIN articles a ON a.id = q.article_id
+    WHERE r.created_at >= ? ORDER BY r.id DESC LIMIT 40`, addDays(today, -30));
   const radar = Object.keys(ABILITY_NAMES).filter((k) => k !== "predict").map((k) => {
     const r = radarRows.find((x) => x.ability === k);
     return { ability: k, name: ABILITY_NAMES[k], correct: r?.c || 0, total: r?.n || 0, rate: r && r.n ? Math.round((r.c / r.n) * 100) : null };
@@ -39,6 +46,8 @@ export async function report(env) {
   const settings = await getSettings(env);
   const st = await streakInfo(env, today, settings);
   const due = await first(env, "SELECT COUNT(*) n FROM chars WHERE status IN ('seen','familiar') AND due_at <= ?", today);
+  // the same count the child's home shows (测评 + 阅读 + 课本, familiar or mastered), live rather than the last snapshot
+  const knownNow = await first(env, "SELECT COUNT(*) n FROM chars WHERE status IN ('familiar','mastered')");
   const assessment = await first(env, "SELECT estimate, at, detail FROM assessments ORDER BY id DESC LIMIT 1");
   const week = history.filter((h) => h.date > addDays(today, -7) && h.daily);
   return {
@@ -49,6 +58,12 @@ export async function report(env) {
     curve,
     newMastered,
     dueReview: due?.n || 0,
+    knownNow: knownNow?.n || 0,
+    review: {
+      total: reviewRows.length,
+      right: reviewRows.filter((r) => r.correct).length,
+      items: reviewRows.slice(0, 12).map((r) => ({ date: r.created_at.slice(0, 10), title: r.title, prompt: r.prompt, ability: ABILITY_NAMES[r.ability], correct: !!r.correct })),
+    },
     targetNew: settings.target_new,
     assessmentRequested: settings.assessment_requested === true,
     assessment: assessment ? { estimate: assessment.estimate, reached: levelReached(assessment.estimate), at: assessment.at, levels: safeJSON(assessment.detail, []) } : null,
@@ -74,7 +89,88 @@ export async function report(env) {
       }),
     })),
     suggestion: suggest(radar, settings, due?.n || 0),
+    digest: await weeklyDigest(env, today),
+    monthly: await monthlyTrend(env, today),
   };
+}
+
+// ---------------------------------------------------------------- weekly digest & trend
+/**
+ * 家长周报: last full week (Mon–Sun before this week), in a few numbers and
+ * one suggestion. Shown on the report and pushed on Mondays (sendDigest).
+ */
+export async function weeklyDigest(env, today = cnDate()) {
+  const from = addDays(weekStart(today), -7), to = addDays(from, 6);
+  const prevFrom = addDays(from, -7);
+  const settings = await getSettings(env);
+  const [days, done, active, knownNow, before, acc, accPrev, radarRows] = await Promise.all([
+    first(env, "SELECT COUNT(*) n FROM days WHERE date BETWEEN ? AND ? AND completed = 1", from, to),
+    first(env, "SELECT COUNT(*) n, COALESCE(SUM(a.char_count), 0) chars FROM sessions s JOIN articles a ON a.id = s.article_id WHERE s.date BETWEEN ? AND ? AND s.level >= 2", from, to),
+    first(env, "SELECT COALESCE(SUM(active_ms), 0) ms FROM sessions WHERE date BETWEEN ? AND ?", from, to),
+    first(env, "SELECT COUNT(*) n FROM chars WHERE status IN ('familiar','mastered')"),
+    first(env, "SELECT known FROM snapshots WHERE date < ? ORDER BY date DESC LIMIT 1", from),
+    first(env, "SELECT AVG(an.correct) r, COUNT(*) n FROM answers an JOIN sessions s ON s.id = an.session_id WHERE an.attempt = 1 AND an.ability <> 'predict' AND s.date BETWEEN ? AND ?", from, to),
+    first(env, "SELECT AVG(an.correct) r, COUNT(*) n FROM answers an JOIN sessions s ON s.id = an.session_id WHERE an.attempt = 1 AND an.ability <> 'predict' AND s.date BETWEEN ? AND ?", prevFrom, addDays(from, -1)),
+    all(env, "SELECT ability, SUM(correct) c, COUNT(*) n FROM answers WHERE created_at >= ? AND attempt = 1 AND ability <> 'predict' GROUP BY ability", addDays(today, -30)),
+  ]);
+  const rated = radarRows.filter((r) => r.n >= 4).map((r) => ({ name: ABILITY_NAMES[r.ability] || r.ability, rate: Math.round((r.c / r.n) * 100) }));
+  // a "weakest" skill only when it is actually weak
+  const lowest = rated.sort((a, b) => a.rate - b.rate)[0] || null;
+  const weak = lowest && lowest.rate < 80 ? lowest : null;
+  const daysRead = days?.n || 0;
+  const tip = daysRead <= 2
+    ? "这周读得少，试试固定一个时间（比如晚饭后），每天一篇就好。"
+    : weak && weak.rate < 60
+      ? `「${weak.name}」偏弱：读完后问一句“你是从哪句看出来的？”，让孩子指给你看。`
+      : "节奏不错！可以问问孩子最喜欢这周哪个故事，让孩子讲给你听。";
+  const d = {
+    name: settings.child_name, from, to, daysRead,
+    articles: done?.n || 0, chars: done?.chars || 0, minutes: Math.round((active?.ms || 0) / 60000),
+    knownNow: knownNow?.n ?? null, knownDelta: before ? Math.max(0, (knownNow?.n || 0) - before.known) : null,
+    firstTry: acc?.n ? acc.r : null, firstTryPrev: accPrev?.n ? accPrev.r : null, weak, tip,
+  };
+  return { ...d, text: digestText(d), webhook: !!settings.weekly_webhook, sentWeek: settings.weekly_sent || null };
+}
+
+/** 月度趋势: what decides whether the app is worth keeping, month by month. */
+export async function monthlyTrend(env, today = cnDate(), months = 6) {
+  const start = addDays(today, -31 * (months - 1)).slice(0, 8) + "01";
+  const [reads, acc, snaps] = await Promise.all([
+    all(env, `SELECT substr(s.date, 1, 7) m, COUNT(*) n, COUNT(DISTINCT s.date) days, COALESCE(SUM(a.char_count), 0) chars
+      FROM sessions s JOIN articles a ON a.id = s.article_id WHERE s.level >= 2 AND s.date >= ? GROUP BY m`, start),
+    all(env, `SELECT substr(s.date, 1, 7) m, AVG(an.correct) r FROM answers an JOIN sessions s ON s.id = an.session_id
+      WHERE an.attempt = 1 AND an.ability <> 'predict' AND s.date >= ? GROUP BY m`, start),
+    all(env, "SELECT substr(date, 1, 7) m, MAX(date) d, known FROM snapshots WHERE date >= ? GROUP BY m", start),
+  ]);
+  const ms = [...new Set([...reads, ...acc, ...snaps].map((r) => r.m))].sort();
+  return ms.map((m) => {
+    const r = reads.find((x) => x.m === m), a = acc.find((x) => x.m === m), k = snaps.find((x) => x.m === m);
+    return { month: m, articles: r?.n || 0, days: r?.days || 0, chars: r?.chars || 0, firstTry: a ? Math.round(a.r * 100) : null, known: k?.known ?? null };
+  });
+}
+
+/** Push the weekly card to the parent's chat-bot webhook. */
+export async function sendDigest(env, { force = false } = {}) {
+  const s = await getSettings(env);
+  if (!s.weekly_webhook) throw new HttpError(400, "还没有设置周报推送地址");
+  const today = cnDate();
+  const week = weekStart(today);
+  if (!force && s.weekly_sent === week) return { sent: false, already: true };
+  const d = await weeklyDigest(env, today);
+  const res = await fetch(s.weekly_webhook, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(webhookPayload(s.weekly_webhook, d.text)) });
+  if (!res.ok) throw new HttpError(502, `推送失败：对方返回 ${res.status}`);
+  if (!force) await setSetting(env, "weekly_sent", week);
+  return { sent: true, text: d.text };
+}
+
+/** Cron: Monday from 08:00 (Asia/Shanghai), once a week. */
+export async function maybeSendDigest(env, nowMs = Date.now()) {
+  const s = await getSettings(env);
+  if (!s.weekly_webhook) return null;
+  const today = cnDate(nowMs);
+  const hour = new Date(nowMs + 8 * 3600000).getUTCHours();
+  if (new Date(today + "T00:00:00Z").getUTCDay() !== 1 || hour < 8 || s.weekly_sent === weekStart(today)) return null;
+  return sendDigest(env);
 }
 
 /** 建议行: next week's tilt, from the data. */
@@ -346,7 +442,7 @@ export async function articleAction(env, id, action) {
       if (a.status !== "ready") throw new HttpError(400, "只有已就绪的文章能设为今日一篇");
       const started = await first(env, "SELECT 1 FROM sessions WHERE date = ? AND daily = 1 LIMIT 1", today);
       if (started) throw new HttpError(409, "今天已经开始读了，明天再换");
-      await run(env, "INSERT INTO daily_pick (date, article_id, reason) VALUES (?, ?, '家长指定') ON CONFLICT(date) DO UPDATE SET article_id = excluded.article_id, reason = excluded.reason", today, id);
+      await run(env, "INSERT INTO daily_pick (date, article_id, reason, alts) VALUES (?, ?, '家长指定', NULL) ON CONFLICT(date) DO UPDATE SET article_id = excluded.article_id, reason = excluded.reason, alts = NULL", today, id);
       break;
     }
     case "delete":
@@ -443,7 +539,7 @@ export async function removePinyinFix(env, { word }) {
 }
 
 // ---------------------------------------------------------------- settings
-const EDITABLE = ["ai_daily_calls", "protagonist", "auto_generate", "pinyin", "font_size", "session_min", "rest_min", "daily_limit_min", "bedtime", "wake_time", "interests", "rewards", "audio", "skill_days", "child_name", "target_new", "params"];
+const EDITABLE = ["weekly_webhook", "ai_daily_calls", "protagonist", "auto_generate", "pinyin", "font_size", "session_min", "rest_min", "daily_limit_min", "bedtime", "wake_time", "interests", "rewards", "audio", "skill_days", "child_name", "target_new", "params"];
 
 export async function getParentSettings(env) {
   const s = await getSettings(env);
@@ -472,6 +568,7 @@ export async function putSettings(env, body) {
       case "protagonist": if (!v || typeof v !== "object" || ["name", "traits", "friends"].some((k) => typeof (v[k] ?? "") !== "string" || (v[k] || "").length > 60)) bad(); break;
       case "auto_generate": if (typeof v !== "boolean") bad(); break;
       case "ai_daily_calls": if (!(Number.isInteger(v) && v >= 0 && v <= 1000)) bad(); break;
+      case "weekly_webhook": if (typeof v !== "string" || v.length > 500 || (v && !/^https:\/\/[^\s]+$/.test(v))) bad(); break;
     }
     await setSetting(env, k, k === "params" ? { ...DEFAULT_SETTINGS.params, ...v } : v);
   }

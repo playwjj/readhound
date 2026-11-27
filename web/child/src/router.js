@@ -10,6 +10,7 @@ import Collection from "./views/Collection.vue";
 import MapView from "./views/MapView.vue";
 import Skills from "./views/Skills.vue";
 import Reread from "./views/Reread.vue";
+import Likes from "./views/Likes.vue";
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -20,6 +21,7 @@ export const router = createRouter({
     { path: "/collection", component: Collection, meta: { wide: true } },
     { path: "/map", component: MapView, meta: { wide: true } },
     { path: "/skills", component: Skills, meta: { wide: true } },
+    { path: "/likes", component: Likes },
     { path: "/reread/:id(\\d+)", component: Reread, props: (r) => ({ id: Number(r.params.id), focus: r.query.c || "" }) },
     { path: "/:rest(.*)", redirect: "/" },
   ],

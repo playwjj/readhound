@@ -18,7 +18,8 @@ async function submit() {
 <template>
   <form class="card" style="max-width: 380px; margin: 12vh auto" @submit.prevent="submit">
     <h2>家长入口</h2>
-    <input v-model="pin" type="password" inputmode="numeric" placeholder="家长密码" autofocus />
+    <p class="muted" style="font-size: 15px">输入家长 PIN（部署时设置的 PARENT_PIN，和孩子平板上的 PIN 不是同一个），回车或点“进入”。</p>
+    <input v-model="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="家长 PIN" autofocus />
     <div class="err">{{ err }}</div>
     <Btn :action="submit" style="margin-top: 10px; width: 100%">进入</Btn>
   </form>

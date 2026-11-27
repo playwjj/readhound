@@ -178,8 +178,22 @@ CREATE TABLE IF NOT EXISTS daily_pick (
   date       TEXT PRIMARY KEY,
   article_id INTEGER NOT NULL REFERENCES articles(id),
   reason     TEXT,
+  alts       TEXT,                       -- JSON [article_id, …] the child may choose instead; NULL = no choice
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 错题回炉: comprehension questions missed first time, asked again on later days.
+CREATE TABLE IF NOT EXISTS review_answers (
+  id          INTEGER PRIMARY KEY,
+  session_id  INTEGER NOT NULL REFERENCES sessions(id),
+  question_id INTEGER NOT NULL REFERENCES questions(id),
+  ability     TEXT NOT NULL,
+  choice      INTEGER NOT NULL,
+  correct     INTEGER NOT NULL,          -- 0/1, one try per question per session
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_question ON review_answers(question_id);
+CREATE INDEX IF NOT EXISTS idx_review_session ON review_answers(session_id);
 
 -- One row per day with activity: streak + eye-care minutes.
 CREATE TABLE IF NOT EXISTS days (

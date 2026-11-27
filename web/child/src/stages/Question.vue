@@ -1,7 +1,7 @@
 <!-- 4. 闯关: one multiple-choice question (also 猜词义 retries and 概括段意). -->
 <script setup>
 import { ref } from "vue";
-import { reading, noteAnswer } from "../reading.js";
+import { reading, noteAnswer, progressAt } from "../reading.js";
 import { questApi } from "../lib/api.js";
 import { speak } from "../lib/voice.js";
 import PageHead from "../components/PageHead.vue";
@@ -47,7 +47,7 @@ const readQuestion = () => speak(props.q.prompt + "。" + props.q.options.map((o
 </script>
 
 <template>
-  <PageHead :title="R.article.title" :pct="pct ?? 0.6 + 0.25 * (n / Math.max(total, 1))" />
+  <PageHead :title="R.article.title" :pct="pct ?? progressAt('quest', 0.6 * (n / Math.max(total, 1)))" />
   <div class="card">
     <div class="row">
       <span class="ability">{{ isTask ? "读前任务" : q.abilityName || "闯关" }}</span>

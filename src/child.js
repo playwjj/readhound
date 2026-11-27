@@ -7,9 +7,9 @@ import { pinyin as pinyinPro } from "pinyin-pro";
 import { ensureGlosses, enqueueGenerated } from "./pipeline.js";
 import { currentUnit } from "./curriculum.js";
 import {
-  cnDate, addDays, rankCandidates, adaptTarget, verdict, srsUpdate, sampleLevel, scoreAssessment,
-  ASSESS_LEVELS, ASSESS_PER_LEVEL, LEVEL_NAMES, BONES, puppyStage, mapPosition, medalsFor, streakFrom, MAX_FREEZES,
-  eyeCare, skillsFor, MAX_ATTEMPTS, RETELL_PASS, RETELL_MAX, FLUENCY_DAILY,
+  cnDate, addDays, rankCandidates, pickChoices, dueReviews, REVIEW_WINDOW_DAYS, REVIEW_MAX, adaptTarget, verdict, srsUpdate, sampleLevel, scoreAssessment,
+  ASSESS_LEVELS, ASSESS_PER_LEVEL, LEVEL_NAMES, BONES, puppyStage, mapState, regionOf, medalsFor, streakFrom, MAX_FREEZES,
+  eyeCare, skillsFor, READALOUD_SCORE_AFTER, MAX_ATTEMPTS, RETELL_PASS, RETELL_MAX, FLUENCY_DAILY,
 } from "./lib/logic.js";
 import { openChest } from "./data/surprises.js";
 import { compareReading } from "./lib/fluency.js";
@@ -43,6 +43,12 @@ async function soon(ctx, job, ms = 3000) {
 
 async function completedCount(env) {
   return (await first(env, "SELECT COUNT(*) n FROM sessions WHERE level >= 2")).n;
+}
+
+/** Completed readings per genre (the map is lit by what was read). */
+async function genreCounts(env) {
+  const rows = await all(env, "SELECT a.genre, COUNT(*) n FROM sessions s JOIN articles a ON a.id = s.article_id WHERE s.level >= 2 GROUP BY a.genre");
+  return Object.fromEntries(rows.map((r) => [r.genre || "story", r.n]));
 }
 
 async function bonesBalance(env) {
@@ -81,16 +87,18 @@ async function candidatePool(env, excludeIds) {
 }
 
 async function pickContext(env, today, settings) {
-  const [known, dueRows, upRows, recent, unit] = await Promise.all([
+  const [known, dueRows, upRows, recent, unit, counts] = await Promise.all([
     knownSet(env),
     all(env, "SELECT char FROM chars WHERE status IN ('seen','familiar') AND due_at <= ?", today),
     all(env, "SELECT char FROM textbook_chars"),
     all(env, "SELECT a.genre FROM daily_pick p JOIN articles a ON a.id = p.article_id WHERE p.date < ? ORDER BY p.date DESC LIMIT 3", today),
     currentUnit(env),
+    genreCounts(env),
   ]);
   const due = new Set(dueRows.map((r) => r.char));
   const upcoming = new Set(upRows.map((r) => r.char));
-  return { known, due, upcoming, recentGenres: recent.map((r) => r.genre), interests: settings.interests || [], targetNew: settings.target_new, unit };
+  return { known, due, upcoming, recentGenres: recent.map((r) => r.genre), interests: settings.interests || [], targetNew: settings.target_new, unit,
+    genreCounts: counts, genreName: (g) => GENRE_NAMES[g] };
 }
 
 async function readArticleIds(env) {
@@ -111,13 +119,66 @@ export async function ensurePick(env, today, ctx, waitMs = 0) {
   if (!pool.length) pool = await candidatePool(env, await readArticleIds(env)); // allow recently skipped picks again
   if (!pool.length) return null;
   const pc = await pickContext(env, today, settings);
-  const best = rankCandidates(pool, pc)[0];
+  const ranked = rankCandidates(pool, pc);
+  const best = ranked[0];
+  const alts = pickChoices(ranked).map((c) => c.id);
   const reason = best.tier === "later" ? `${best.reason}（书库里暂无更合适的，先读最容易的一篇）` : best.reason;
-  await run(env, "INSERT INTO daily_pick (date, article_id, reason) VALUES (?, ?, ?) ON CONFLICT(date) DO UPDATE SET article_id = excluded.article_id, reason = excluded.reason", today, best.id, reason);
+  await run(env, "INSERT INTO daily_pick (date, article_id, reason, alts) VALUES (?, ?, ?, ?) ON CONFLICT(date) DO UPDATE SET article_id = excluded.article_id, reason = excluded.reason, alts = excluded.alts",
+    today, best.id, reason, alts.length ? JSON.stringify(alts) : null);
   // backfill glosses for this child's new characters (AI; off the reading path when possible)
   const job = ensureGlosses(env, { id: best.id, title: best.title, body: (await first(env, "SELECT body FROM articles WHERE id = ?", best.id)).body }, teachList(best.newChars)).catch((e) => console.warn("[pick] gloss backfill failed", e?.message));
   await soon(ctx, job, waitMs);
   return { article_id: best.id, reason: best.reason, title: best.title, genre: best.genre, char_count: best.charCount };
+}
+
+/**
+ * 每日二选一: today's pick and its alternatives, while the day's reading has
+ * not started. Every one of them suits the child; the choice is the child's.
+ */
+async function todayChoices(env, today) {
+  const p = await first(env, "SELECT article_id, alts FROM daily_pick WHERE date = ?", today);
+  const alts = safeJSON(p?.alts, null);
+  if (!alts?.length) return null;
+  const ids = [p.article_id, ...alts];
+  const rows = await all(env, `SELECT id, title, genre, char_count FROM articles WHERE status = 'ready' AND id IN (${ids.map(() => "?").join(",")})`, ...ids);
+  const done = await readArticleIds(env);
+  const list = ids.map((id) => rows.find((r) => r.id === id)).filter((r) => r && (r.id === p.article_id || !done.has(r.id)));
+  if (list.length < 2) return null;
+  return list.map((r) => ({ id: r.id, title: r.title, genre: GENRE_NAMES[r.genre] || r.genre, chars: r.char_count, current: r.id === p.article_id }));
+}
+
+/** What the child can say it likes (the screening AI tags articles with these words). */
+export const INTEREST_CHOICES = ["动物", "科学", "冒险", "搞笑", "历史", "太空", "友情", "侦探", "神话", "恐龙", "自然", "运动"];
+
+/**
+ * 我喜欢读…: the child chooses its own interests. Replaces the parent's
+ * picks from the same list; the parent's own words outside it stay.
+ */
+export async function setInterests(env, { tags }) {
+  if (!Array.isArray(tags)) throw new HttpError(400, "tags must be a list");
+  const chosen = [...new Set(tags.filter((t) => INTEREST_CHOICES.includes(t)))].slice(0, 6);
+  const s = await getSettings(env);
+  const kept = (s.interests || []).filter((t) => !INTEREST_CHOICES.includes(t));
+  await setSetting(env, "interests", [...chosen, ...kept]);
+  await setSetting(env, "interests_by_child", cnDate());
+  return { interests: [...chosen, ...kept] };
+}
+
+/** The child picks today's article from the choices (before starting it). */
+export async function choosePick(env, ctx, { articleId }) {
+  const today = cnDate();
+  if (await first(env, "SELECT 1 FROM sessions WHERE date = ? AND daily = 1 LIMIT 1", today)) throw new HttpError(409, "今天已经开始读了，明天再选");
+  const choices = await todayChoices(env, today);
+  const c = choices?.find((x) => x.id === Number(articleId));
+  if (!c) throw new HttpError(400, "这篇不在今天的可选里");
+  if (!c.current) {
+    await run(env, "UPDATE daily_pick SET article_id = ?, reason = ? WHERE date = ?", c.id, "孩子自己选的", today);
+    // the chosen one's glosses (AI) — usually quick, and the start waits for them anyway
+    const a = await first(env, "SELECT id, title, body, uniq FROM articles WHERE id = ?", c.id);
+    const { teachable } = newCharsFor(a.uniq || "", await knownSet(env));
+    await soon(ctx, ensureGlosses(env, a, teachList(teachable)).catch((e) => console.warn("[choose] gloss backfill failed", e?.message)), 3000);
+  }
+  return home(env, ctx);
 }
 
 /**
@@ -166,6 +227,16 @@ export async function home(env, ctx) {
     all(env, "SELECT code, title FROM awards WHERE kind = 'accessory' ORDER BY at"),
     bonesBalance(env),
   ]);
+  // 讲给小猎犬听: offered on the home card too, not only on the result page
+  const skillList = skillsFor(completed, settings.skill_days);
+  let canRetell = false;
+  if (daySession?.level >= 2 && skillList.some((x) => x.key === "retell" && x.unlocked)) {
+    const [q, told] = await Promise.all([
+      first(env, "SELECT 1 FROM questions WHERE article_id = ? AND kind = 'retell'", pick.article_id),
+      first(env, "SELECT COUNT(*) n FROM retells WHERE session_id = ?", daySession.id),
+    ]);
+    canRetell = !!q && !(told?.n > 0); // not told yet (the result page offers the second try)
+  }
   return {
     today,
     childName: settings.child_name,
@@ -180,11 +251,17 @@ export async function home(env, ctx) {
     knownChars: counts?.known || 0,
     tamedChars: counts?.tamed || 0,
     puppy: puppyStage(completed),
-    map: mapPosition(completed),
+    map: mapState(await genreCounts(env)),
     accessories,
-    skills: skillsFor(completed, settings.skill_days),
+    skills: skillList,
     eye: eyeCare(settings, day?.screen_ms || 0),
     canExtra: todayDone,
+    canRetell,
+    // 我喜欢读…: asked once on home; changeable from the likes page
+    interests: settings.interests || [],
+    askInterests: !settings.interests_by_child,
+    // 每日二选一: offered until today's reading starts
+    choices: pick && !daySession ? await todayChoices(env, today) : null,
   };
 }
 
@@ -250,6 +327,7 @@ export async function startSession(env, ctx, { extra = false } = {}) {
   const unglossed = plan.filter((p) => !gl.get(p.char)?.gloss).map((p) => p.char);
   if (unglossed.length && ctx) ctx.waitUntil(ensureGlosses(env, a, unglossed).catch((e) => console.warn("[session] gloss backfill failed", e?.message)));
   const purpose = has("purpose") ? safeJSON(a.purpose, null) : null;
+  const review = s.daily ? await reviewItems(env, today, a.id) : [];
   const choiceQs = qs.filter((q) => q.kind === "choice");
   const guess = has("guess") ? qs.find((q) => q.kind === "guess") : null;
   const predict = has("predict") ? qs.find((q) => q.kind === "predict") : null;
@@ -287,7 +365,10 @@ export async function startSession(env, ctx, { extra = false } = {}) {
     }),
     sections: sections.map((q) => ({ id: q.id, prompt: q.prompt, options: JSON.parse(q.options), ...safeJSON(q.meta, {}) })),
     // the key points stay on the server: the child retells freely
+    // 错题回炉: earlier misses, asked again before today's reading
+    review,
     readAloud: has("readaloud"),
+    readAloudScored: completed >= READALOUD_SCORE_AFTER,
     retell: retellQ ? { points: JSON.parse(retellQ.options).length, triesLeft: Math.max(0, RETELL_MAX - retells) } : null,
     charQuiz: plan.filter((p) => p.quiz).map((p, i) => ({
       char: p.char, word: gl.get(p.char)?.word || null, review: !!p.review,
@@ -298,6 +379,47 @@ export async function startSession(env, ctx, { extra = false } = {}) {
     eye: eyeCare(settings, day?.screen_ms || 0),
     maxAttempts: MAX_ATTEMPTS,
   };
+}
+
+/**
+ * 错题回炉: comprehension questions this child missed first time in the last
+ * two weeks (other articles), due again today. Each comes with the paragraph
+ * that holds the answer, so it is a short reading of its own.
+ */
+async function reviewItems(env, today, articleId) {
+  const missed = await all(env, `SELECT an.question_id, MAX(s.date) date FROM answers an
+      JOIN sessions s ON s.id = an.session_id JOIN questions q ON q.id = an.question_id
+    WHERE an.attempt = 1 AND an.correct = 0 AND q.kind = 'choice' AND s.date >= ? AND s.date < ? AND s.article_id <> ?
+    GROUP BY an.question_id`, addDays(today, -REVIEW_WINDOW_DAYS), today, articleId);
+  if (!missed.length) return [];
+  const ids = missed.map((m) => m.question_id);
+  const ph = ids.map(() => "?").join(",");
+  const reviews = await all(env, `SELECT r.question_id, r.correct, s.date FROM review_answers r JOIN sessions s ON s.id = r.session_id WHERE r.question_id IN (${ph})`, ...ids);
+  const due = dueReviews(missed.map((m) => ({
+    questionId: m.question_id, date: m.date,
+    reviews: reviews.filter((r) => r.question_id === m.question_id).map((r) => ({ date: r.date, correct: r.correct })),
+  })), today);
+  if (!due.length) return [];
+  const qs = await all(env, `SELECT q.id, q.ability, q.prompt, q.options, q.evidence, a.title, a.body FROM questions q JOIN articles a ON a.id = q.article_id
+    WHERE q.id IN (${due.map(() => "?").join(",")})`, ...due.map((d) => d.questionId));
+  return due.map((d) => qs.find((q) => q.id === d.questionId)).filter(Boolean).map((q) => ({
+    id: q.id, ability: q.ability, abilityName: ABILITY_NAMES[q.ability], prompt: q.prompt, options: JSON.parse(q.options),
+    title: q.title, passage: q.evidence != null ? paragraphs(q.body)[q.evidence] || null : null,
+  }));
+}
+
+/** One answer to a 回炉 question: one try per session, then the answer is shown. */
+export async function reviewAnswer(env, id, { questionId, choice }) {
+  const s = await ownSession(env, id);
+  const q = await first(env, "SELECT id, ability, answer, explain FROM questions WHERE id = ? AND kind = 'choice'", questionId);
+  if (!q) throw new HttpError(404, "question not found");
+  const prev = await first(env, "SELECT correct FROM review_answers WHERE session_id = ? AND question_id = ?", s.id, q.id);
+  if (prev) return { correct: !!prev.correct, answer: q.answer, explain: q.explain, already: true };
+  const tries = (await first(env, "SELECT COUNT(*) n FROM review_answers WHERE question_id = ?", q.id)).n;
+  if (tries >= REVIEW_MAX) throw new HttpError(409, "这道题已经回炉过了");
+  const correct = Number(choice) === q.answer ? 1 : 0;
+  await run(env, "INSERT INTO review_answers (session_id, question_id, ability, choice, correct) VALUES (?, ?, ?, ?, ?)", s.id, q.id, q.ability, Number(choice), correct);
+  return { correct: !!correct, answer: q.answer, explain: q.explain };
 }
 
 /**
@@ -451,6 +573,7 @@ export async function finish(env, id) {
     activeMs: s.active_ms,
     answers: answers.map((x) => ({ questionId: x.question_id, ability: x.ability, correct: x.correct, attempt: x.attempt, evidence: x.evidence })),
     charQuiz: quiz.map((q) => ({ correct: q.correct || q.retry_ok })),
+    fails: safeJSON(s.verdict, null)?.fails || 0,
   });
   const charFirstAll = quiz.length > 0 && quiz.every((q) => q.correct);
   v.charFirstOk = quiz.filter((q) => q.correct).length; // for the parent: first try, before re-meeting
@@ -468,14 +591,18 @@ export async function finish(env, id) {
   const today = cnDate();
   const settings = await getSettings(env);
   const gains = [];
+  // 找回答案 / 读完也算数: through, with half the base bones
+  const soft = v.tier === "found" || v.tier === "effort";
+  const base = (n) => (soft ? Math.ceil(n / 2) : n);
+  const tierNote = v.tier === "found" ? "（找回答案）" : v.tier === "effort" ? "（读完也算数）" : "";
   if (s.daily) {
     await run(env, "INSERT INTO days (date, completed) VALUES (?, 1) ON CONFLICT(date) DO UPDATE SET completed = 1", today);
-    gains.push({ amount: BONES.daily, reason: "完成今日阅读" });
+    gains.push({ amount: base(BONES.daily), reason: "完成今日阅读" + tierNote });
   } else {
     const day = await first(env, "SELECT extra_bonus FROM days WHERE date = ?", today);
     if ((day?.extra_bonus || 0) < BONES.extraCapPerDay) {
       await run(env, "INSERT INTO days (date, extra_bonus) VALUES (?, 1) ON CONFLICT(date) DO UPDATE SET extra_bonus = days.extra_bonus + 1", today);
-      gains.push({ amount: BONES.extra, reason: "多读一篇" });
+      gains.push({ amount: base(BONES.extra), reason: "多读一篇" + tierNote });
     }
   }
   if (v.accuracy >= 0.9) gains.push({ amount: BONES.accuracy, reason: "闯关题几乎全对" });
@@ -509,6 +636,8 @@ export async function finish(env, id) {
   const target = adaptTarget(settings.target_new, recent.map((r) => r.accuracy));
   if (target !== settings.target_new) await setSetting(env, "target_new", target);
 
+  const map = mapState(await genreCounts(env));
+  const region = map.regions.find((r) => r.key === regionOf(a.genre).key);
   const before = puppyStage(completed - 1);
   const puppy = puppyStage(completed);
   return {
@@ -516,7 +645,7 @@ export async function finish(env, id) {
     rewards: {
       bones: gains, total: bones, balance: await bonesBalance(env), chest, medals: newMedals,
       streak: st.streak, freezes: st.freezes, freezeEarned: !!st.freezeEarned,
-      puppy, puppyGrew: puppy.key !== before.key, map: mapPosition(completed), completed,
+      puppy, puppyGrew: puppy.key !== before.key, map: { region: region.name, icon: region.icon, count: region.count, firstVisit: region.count === 1, tower: map.tower }, completed,
     },
   };
 }

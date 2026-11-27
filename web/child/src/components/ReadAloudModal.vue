@@ -60,8 +60,12 @@ const pct = () => Math.round(result.value.accuracy * 100);
     <p v-if="!supported">这台设备的浏览器不支持录音。</p>
     <p v-else class="muted">{{ status }}</p>
     <div v-if="result">
-      <div class="feedback" :class="pct() >= 80 ? 'ok' : 'try'">
-        <b>{{ pct() >= 95 ? "读得又准又顺！🎉 " : pct() >= 80 ? "读得不错！🐾 " : "读完啦！有几个地方再读读。 " }}</b>读准了 {{ pct() }}%，每分钟 {{ result.cpm }} 字。
+      <div class="feedback" :class="pct() >= 80 || !R.readAloudScored ? 'ok' : 'try'">
+        <template v-if="R.readAloudScored">
+          <b>{{ pct() >= 95 ? "读得又准又顺！🎉 " : pct() >= 80 ? "读得不错！🐾 " : "读完啦！有几个地方再读读。 " }}</b>读准了 {{ pct() }}%，每分钟 {{ result.cpm }} 字。
+        </template>
+        <!-- the first week: no score, just the joy of reading out loud -->
+        <b v-else>{{ pct() >= 80 ? "读得真响亮！小猎犬听得很开心 🐾" : "读完啦！小猎犬听到了 🐾" }}</b>
       </div>
       <div v-if="result.practise.length" style="margin-top: 10px">
         <span class="muted">这几个地方再读读（点一下听）：</span>

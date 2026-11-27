@@ -15,6 +15,7 @@ const count = (s) => c.value.cards.filter((x) => x.status === s).length;
   <PageHead title="生字图鉴" />
   <p v-if="!c" class="center muted">正在翻图鉴……</p>
   <template v-else>
+    <p class="muted center" style="font-size: 15px; margin: 0 0 8px">这里是读故事时遇到的字。首页的“认识的字”还算上了测评和课本里的字。</p>
     <div class="legend"><span>🏅 已驯服 {{ count("mastered") }}</span><span>💙 认识 {{ count("familiar") }}</span><span>👀 见过 {{ count("seen") }}</span></div>
     <div v-if="c.medals.length" class="card"><b>我的勋章 </b><span v-for="m in c.medals" :key="m.title" class="medal">🏅 {{ m.title }}</span></div>
     <div v-if="c.cards.length" class="cards">

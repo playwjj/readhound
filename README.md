@@ -95,6 +95,32 @@ What works end to end:
   (flagged / rejected / force / pick today), textbook character lists,
   manual corrections, settings, rewards, printable monthly passport.
 
+Daily choice and question review:
+
+- **每日二选一** — the daily pick comes with up to two alternatives from the
+  same tier and close in score (a different genre where possible). Until
+  today's reading starts, the child picks one on the home card
+  (`POST /api/pick/choose`); a parent's 设为今日 removes the choice.
+- **错题回炉** — comprehension questions missed first time in the last 14
+  days come back before the next daily reading (2 a day, with the paragraph
+  holding the answer; one try each, until right or 3 tries). Results go into
+  the ability radar and a 错题回炉 card in the parent report.
+
+- **闯关地图 by genre** — eight regions, each lit by reading its genres
+  (神话 → 神话之河, 科普 → 科学港湾 …); every region read 3+ times adds a
+  floor to 智慧高塔. A region not visited yet gives an article a small nudge
+  in the daily pick, so the map also pulls toward variety.
+- **我喜欢读…** — the child chooses its own interest tags once (home asks;
+  changeable from the footer link). They replace the parent's choices from
+  the same list; the parent's own words stay.
+- **家长周报** — last week in a few lines (days read, characters, first-try
+  rate vs the week before, weakest skill, one thing to try) at the top of the
+  report, with a copy button; with `weekly_webhook` set (企业微信 / 钉钉 /
+  飞书 bot, or any https endpoint taking `{"text": …}`) the cron pushes it
+  on Monday after 08:00 (Asia/Shanghai). The report also has a 月度趋势
+  table (reading days, articles, characters, first-try rate, known
+  characters per month).
+
 Phase 2 skills (unlock one every `skill_days` completed readings, after
 the phase-1 ones; `skill_days: 0` unlocks all):
 
@@ -117,7 +143,8 @@ practice). The pre-reading task comes in one object with its question.
   bones. The only live model call on the reading path: two per session.
   `@cf/openai/whisper` (handles iPad AAC); `STT_MODEL` overrides.
 
-- **大声朗读** (phase 3) — 🎙 on any paragraph: speech recognition, then a
+- **大声朗读** (unlocks after the first completed article; no percentage
+  shown for the first 7, so a weak reader is not graded on day one) — 🎙 on any paragraph: speech recognition, then a
   toneless-pinyin alignment (LCS) with the paragraph's corrected pinyin,
   so a homophone written by the recogniser is never a reading error.
   Shows accuracy, characters per minute and the words to practise
@@ -170,6 +197,11 @@ references on install, so reading works offline.
 With `AI_MOCK=1` the pipeline produces deterministic stub glosses and
 questions so the whole loop can be exercised offline. Remove it to use
 Workers AI (bills the logged-in account even in local dev).
+
+Note: the `[ai]` binding in `wrangler.toml` makes `wrangler dev` proxy to
+Cloudflare and ask for `CLOUDFLARE_API_TOKEN` even with `AI_MOCK=1`. For a
+fully offline instance, comment out the `[ai]` block locally (with
+`AI_MOCK=1` the code never touches `env.AI`) and don't commit that change.
 
 Difficulty calibration (reproduces `difficulty-sample-2026-11-25.md`):
 

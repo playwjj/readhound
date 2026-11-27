@@ -1,6 +1,6 @@
 <!-- 再见一面: a missed character once more before the retry quiz. -->
 <script setup>
-import { reading } from "../reading.js";
+import { reading, progressAt } from "../reading.js";
 import { speak } from "../lib/voice.js";
 import PageHead from "../components/PageHead.vue";
 const props = defineProps({ ch: String });
@@ -11,7 +11,7 @@ speak(props.ch);
 </script>
 
 <template>
-  <PageHead :title="R.article.title" :pct="0.9" />
+  <PageHead :title="R.article.title" :pct="progressAt('chars', 0.5)" />
   <p class="center muted">再看一眼这个新朋友</p>
   <div class="card warm-card">
     <div class="big">{{ ch }}</div>

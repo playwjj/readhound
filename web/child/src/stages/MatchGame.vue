@@ -1,7 +1,7 @@
 <!-- 30-second warm-up game: hear a character, tap it (§6 读前预热). -->
 <script setup>
 import { ref, computed, onMounted } from "vue";
-import { reading } from "../reading.js";
+import { reading, progressAt } from "../reading.js";
 import { speak } from "../lib/voice.js";
 import { shuffle } from "../lib/fx.js";
 import PageHead from "../components/PageHead.vue";
@@ -39,7 +39,7 @@ onMounted(setup);
 </script>
 
 <template>
-  <PageHead :title="R.article.title" :pct="0.05" />
+  <PageHead :title="R.article.title" :pct="progressAt('warmup', 0.5)" />
   <div class="card center">
     <div class="muted">听音找字 {{ r + 1 }}/{{ order.length }}</div>
     <button class="big soft" style="margin: 14px 0" @click="say">🔊 再听一遍</button>

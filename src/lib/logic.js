@@ -45,8 +45,16 @@ export function rankCandidates(candidates, ctx) {
     }
     const recent = ctx.recentGenres || [];
     if (c.genre && recent.slice(0, 2).includes(c.genre)) score -= 8;
+    if (ctx.genreCounts && c.genre) {
+      const reg = regionOf(c.genre);
+      if (!reg.genres.some((g) => ctx.genreCounts[g])) {
+        score += 3;
+        reasons.push(`去新地区：${reg.name}`);
+      }
+    }
     const tags = c.tags || [];
-    const interest = (ctx.interests || []).filter((t) => tags.includes(t) || c.genre === t);
+    const gname = ctx.genreName ? ctx.genreName(c.genre) || "" : "";
+    const interest = (ctx.interests || []).filter((t) => tags.includes(t) || c.genre === t || (gname && gname.includes(t)));
     if (interest.length) {
       score += 6;
       reasons.push(`兴趣：${interest.join("、")}`);
@@ -79,6 +87,46 @@ export function rankCandidates(candidates, ctx) {
 }
 
 /**
+ * 每日二选一: alternatives to the best pick from the same ranked list — as
+ * suitable (same tier, a "later" only when the best is one), not far behind
+ * in score, and a different genre where possible so the choice is real.
+ */
+export const CHOICE_ALTS = 2;
+export const CHOICE_MAX_GAP = 30; // score points behind the best
+export function pickChoices(ranked, n = CHOICE_ALTS) {
+  const [best, ...rest] = ranked;
+  if (!best) return [];
+  const fit = rest.filter((c) => c.tier === best.tier && best.score - c.score <= CHOICE_MAX_GAP);
+  const out = [];
+  const genres = new Set([best.genre]);
+  for (const c of fit) if (out.length < n && !genres.has(c.genre)) { out.push(c); genres.add(c.genre); }
+  for (const c of fit) if (out.length < n && !out.includes(c)) out.push(c);
+  return out;
+}
+
+/**
+ * 错题回炉: which earlier misses come back today. rows: one per question
+ * missed first time [{questionId, date (of the miss), reviews: [{date, correct}]}].
+ * A question is done once answered right in review, or after REVIEW_MAX
+ * tries; otherwise it is due the day after the miss / the last wrong review.
+ * Most recent misses first.
+ */
+export const REVIEW_PER_DAY = 2;
+export const REVIEW_MAX = 3;
+export const REVIEW_WINDOW_DAYS = 14;
+export function dueReviews(rows, today, n = REVIEW_PER_DAY) {
+  return rows
+    .filter((r) => {
+      const rv = r.reviews || [];
+      if (rv.some((x) => x.correct) || rv.length >= REVIEW_MAX) return false;
+      const last = rv.length ? rv.map((x) => x.date).sort().pop() : r.date;
+      return last < today;
+    })
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.questionId - b.questionId))
+    .slice(0, n);
+}
+
+/**
  * Adapt the new-character target to recent results: two weak sessions in a
  * row step down one notch, three strong ones step up (§3 难度回退).
  */
@@ -94,10 +142,13 @@ export const PASS_ACCURACY = 0.7;
 export const FAST_PASS_ACCURACY = 0.9;
 export const RECOVERY_FIRST_TRY = 0.5;
 export const MAX_ATTEMPTS = 3; // per question: answer, look back + retry, re-read + retry
+/** Unsuccessful finishes of one session before "读完也算数" lets the child through. */
+export const MAX_FAILS = 3;
 /** Minimum believable reading time: 10 chars/second is skimming for grade 4. */
 export const MIN_MS_PER_CHAR = 100;
 /** A paragraph counts as read when it stayed on screen ~3.5 chars/second or slower. */
 export const PARA_MS_PER_CHAR = 60;
+export const CHAR_PASS = 0.6;
 
 export const ABILITY_WEIGHT = { locate: 2, infer: 1.5, extract: 1, word: 1, summarise: 1, theme: 1 };
 
@@ -109,8 +160,19 @@ export const ABILITY_WEIGHT = { locate: 2, infer: 1.5, extract: 1, word: 1, summ
  *   activeMs
  *   answers: [{questionId, ability, correct, attempt, evidence}]
  *   charQuiz: [{correct}]
+ *   fails: unsuccessful finishes of this session before this one
+ *
+ * Pass tiers (best first):
+ *   pass      — first-try accuracy ≥ 0.7 (0.9 when skimmed) and the char quiz
+ *   recovered — at least half right first time, then found every answer
+ *   found     — 找回答案: every answer found in the end, body read slowly;
+ *               fewer bones, but never a dead end
+ *   effort    — 读完也算数: the body was read and no door is left (or the
+ *               third try): base bones, the misses stay in the parent report
+ * The first-try accuracy stays what it is for the report and the difficulty
+ * engine; only the gate is softened.
  */
-export function verdict({ paras, dwell, activeMs, answers, charQuiz }) {
+export function verdict({ paras, dwell, activeMs, answers, charQuiz, fails = 0 }) {
   const total = paras.reduce((a, b) => a + b, 0);
   const unread = [];
   paras.forEach((n, i) => {
@@ -120,50 +182,71 @@ export function verdict({ paras, dwell, activeMs, answers, charQuiz }) {
   const readBody = unread.length === 0;
   const tooFast = activeMs < total * MIN_MS_PER_CHAR;
 
-  // per question: first attempt, and whether it was eventually answered right
+  // per question: first attempt, tries, and whether it was eventually answered right
   const byQ = new Map();
   for (const a of answers) {
-    const q = byQ.get(a.questionId) || { ability: a.ability, evidence: a.evidence, first: null, final: 0 };
+    const q = byQ.get(a.questionId) || { ability: a.ability, evidence: a.evidence, first: null, final: 0, tries: 0 };
     if (a.attempt === 1 && q.first === null) q.first = a.correct;
     if (a.correct) q.final = 1;
+    q.tries = Math.max(q.tries, a.attempt);
     byQ.set(a.questionId, q);
   }
-  let w = 0, gotFirst = 0, gotFinal = 0;
+  let w = 0, gotFirst = 0, gotFinal = 0, firstRight = 0;
   const wrong = [];
   for (const [id, q] of byQ) {
     const weight = ABILITY_WEIGHT[q.ability] || 1;
     w += weight;
-    if (q.first) gotFirst += weight;
+    if (q.first) { gotFirst += weight; firstRight++; }
     if (q.final) gotFinal += weight;
-    else wrong.push({ questionId: id, evidence: q.evidence });
+    else wrong.push({ questionId: id, evidence: q.evidence, tries: q.tries });
   }
   const firstTry = w ? gotFirst / w : 0;
   const score = w ? gotFinal / w : 0;
   const cqOk = charQuiz.filter((c) => c.correct).length;
-  const charPass = charQuiz.length === 0 || cqOk / charQuiz.length >= 0.6;
+  const charNeed = Math.ceil(charQuiz.length * CHAR_PASS);
+  const charPass = cqOk >= charNeed;
   const need = tooFast ? FAST_PASS_ACCURACY : PASS_ACCURACY;
-  // Main gate: first-try accuracy. Recovery path: looked back in the text
-  // and found every answer, with the body genuinely read (not skimmed) and
-  // at least half right first time — guessing alone cannot get through.
-  const recovered = score === 1 && readBody && !tooFast && firstTry >= RECOVERY_FIRST_TRY;
-  const comprehension = byQ.size > 0 && (firstTry >= need || recovered);
-  const completed = comprehension && charPass;
+  const careful = readBody && !tooFast;
+  const answeredAll = byQ.size > 0 && score === 1;
 
+  let tier = null;
+  if (byQ.size > 0 && charPass) {
+    if (firstTry >= need) tier = "pass";
+    else if (answeredAll && careful && firstTry >= RECOVERY_FIRST_TRY) tier = "recovered";
+    else if (answeredAll && careful) tier = "found";
+  }
+  // no door left: every missed question has used its tries
+  const retryable = wrong.filter((x) => x.tries < MAX_ATTEMPTS);
+  const stuck = !answeredAll && retryable.length === 0;
+  if (!tier && byQ.size > 0 && careful && (stuck || fails + 1 >= MAX_FAILS)) tier = "effort";
+  const completed = tier !== null;
+  const comprehension = byQ.size > 0 && (firstTry >= need || answeredAll && careful);
+
+  // what is still missing, said plainly (the child sees it on the "almost" page)
+  const gates = {
+    questions: { found: byQ.size - wrong.length, total: byQ.size, firstRight, ok: comprehension },
+    chars: { right: cqOk, need: charNeed, total: charQuiz.length, ok: charPass },
+    reading: { ok: careful, unread: unread.length, tooFast },
+  };
   let hint = null;
   if (!completed) {
-    if (!comprehension) {
-      const evid = [...new Set(wrong.map((x) => x.evidence).filter((x) => x != null))].sort((a, b) => a - b);
-      hint = evid.length
-        ? `回到第 ${evid.map((i) => i + 1).join("、")} 段再看看，答案就藏在里面。`
-        : tooFast || !readBody
-          ? "读得有点快，慢慢再读一遍，字会更听话。"
-          : "再回原文看看，慢一点读，答案就藏在里面。";
-    } else hint = "生字还差一点点，再和它们见一面吧。";
+    const evid = [...new Set(retryable.map((x) => x.evidence).filter((x) => x != null))].sort((a, b) => a - b);
+    if (!comprehension && retryable.length) {
+      hint = `还有 ${retryable.length} 道题没找到答案` + (evid.length ? `，回到第 ${evid.map((i) => i + 1).join("、")} 段找一找。` : "，回原文找一找。");
+    } else if (!careful) {
+      hint = unread.length
+        ? `还有 ${unread.length} 段读得太快，慢慢再读一遍，字会更听话。`
+        : "读得有点快，慢慢再读一遍，字会更听话。";
+    } else if (!charPass) {
+      hint = `生字小测对了 ${cqOk}/${charQuiz.length} 个，要对 ${charNeed} 个，再和生字见一面吧。`;
+    } else hint = "再回原文看看，慢一点读，答案就藏在里面。";
   }
   return {
     level: completed ? 2 : readBody ? 1 : 0,
     completed,
-    recovered: completed && firstTry < need,
+    tier,
+    recovered: completed && tier !== "pass",
+    fails: completed ? fails : fails + 1,
     readBody,
     tooFast,
     unread,
@@ -171,6 +254,7 @@ export function verdict({ paras, dwell, activeMs, answers, charQuiz }) {
     score: round(score, 3),
     charOk: cqOk,
     charTotal: charQuiz.length,
+    gates,
     retryQuestions: completed ? [] : wrong.map((x) => x.questionId),
     hint,
     minutes: round(activeMs / 60000, 1),
@@ -292,7 +376,7 @@ export const FLUENCY_DAILY = 15; // paragraphs read aloud per day (speech recogn
 
 export const PUPPY_STAGES = [
   { min: 0, name: "小奶狗", key: "pup" },
-  { min: 7, name: "小猎犬", key: "young" },
+  { min: 3, name: "小猎犬", key: "young" }, // the first growth in the first week
   { min: 25, name: "追踪犬", key: "tracker" },
   { min: 60, name: "金牌追踪犬", key: "gold" },
   { min: 120, name: "传奇猎犬", key: "legend" },
@@ -304,15 +388,41 @@ export function puppyStage(completed) {
   return { ...s, next: next ? { name: next.name, need: next.min - completed } : null };
 }
 
-export const MAP_REGIONS = ["拼音草原", "汉字森林", "成语山谷", "神话之河", "故事城堡", "科学港湾", "诗词云岛", "智慧高塔"];
+/**
+ * 闯关地图: each region is lit by reading its genres (读神话点亮神话之河), so
+ * the map shows what the child has read, not just how much. Every region a
+ * child has read 3+ times adds a floor to 智慧高塔.
+ */
+export const MAP_REGIONS = [
+  { key: "story", name: "故事城堡", icon: "🏰", genres: ["story", "life"] },
+  { key: "fairy", name: "童话森林", icon: "🌳", genres: ["fairy"] },
+  { key: "fable", name: "寓言草原", icon: "🦊", genres: ["fable"] },
+  { key: "idiom", name: "成语山谷", icon: "⛰", genres: ["idiom"] },
+  { key: "myth", name: "神话之河", icon: "🐉", genres: ["myth"] },
+  { key: "science", name: "科学港湾", icon: "🔬", genres: ["science"] },
+  { key: "history", name: "历史古城", icon: "🏯", genres: ["history"] },
+  { key: "poem", name: "诗词云岛", icon: "☁", genres: ["poem"] },
+];
 export const NODES_PER_REGION = 10;
-export function mapPosition(completed) {
-  const region = Math.floor(completed / NODES_PER_REGION);
+export const TOWER_AFTER = 3; // reads in a region for a tower floor
+/** The region an article's genre belongs to (unknown genres: the story castle). */
+export function regionOf(genre) {
+  return MAP_REGIONS.find((r) => r.genres.includes(genre)) || MAP_REGIONS[0];
+}
+/** genreCounts: {genre: completed articles}. */
+export function mapState(genreCounts = {}) {
+  const regions = MAP_REGIONS.map((r) => {
+    const count = r.genres.reduce((n, g) => n + (genreCounts[g] || 0), 0);
+    return { key: r.key, name: r.name, icon: r.icon, count, lit: Math.min(count, NODES_PER_REGION), full: count >= NODES_PER_REGION };
+  });
+  const unknown = Object.entries(genreCounts).filter(([g]) => !MAP_REGIONS.some((r) => r.genres.includes(g))).reduce((n, [, c]) => n + c, 0);
+  if (unknown) { regions[0].count += unknown; regions[0].lit = Math.min(regions[0].count, NODES_PER_REGION); regions[0].full = regions[0].count >= NODES_PER_REGION; }
   return {
-    region: MAP_REGIONS[Math.min(region, MAP_REGIONS.length - 1)],
-    regionIndex: region,
-    node: completed % NODES_PER_REGION,
+    regions,
     perRegion: NODES_PER_REGION,
+    explored: regions.filter((r) => r.count > 0).length,
+    tower: { floors: regions.filter((r) => r.count >= TOWER_AFTER).length, total: regions.length },
+    unexplored: regions.filter((r) => r.count === 0).map((r) => r.name),
   };
 }
 
@@ -371,17 +481,56 @@ export function eyeCare(settings, screenMs, nowMs = Date.now()) {
 }
 
 // ---------------------------------------------------------------- skills
+/**
+ * Skill unlocks. Reading aloud and retelling are the tools a weak reader
+ * needs most, so they come first (朗读 from the first completed article,
+ * without a score in the first week); the technique skills follow.
+ */
+export const READALOUD_SCORE_AFTER = 7; // completed articles before 朗读 shows a percentage
 export function skillsFor(completed, every = 5) {
   return [
     { key: "extract", name: "找信息", desc: "答案藏在文章里，回去找一找", at: 0, phase: 1 },
+    { key: "readaloud", name: "大声朗读", desc: "把一段读给小猎犬听，看看读得准不准、顺不顺", at: Math.min(1, every), phase: 1 },
     { key: "purpose", name: "带着问题读", desc: "读之前先接一个观察任务", at: every, phase: 1 },
-    { key: "guess", name: "猜词义", desc: "联系上下文，猜猜生词的意思", at: every * 2, phase: 1 },
-    { key: "predict", name: "预测", desc: "读到一半，猜猜后面会怎样", at: every * 3, phase: 2 },
-    { key: "locate", name: "回文定位", desc: "在原文中点出依据句", at: every * 4, phase: 2 },
-    { key: "summarise", name: "概括段意", desc: "每段说了什么，拼成文章地图", at: every * 5, phase: 2 },
-    { key: "retell", name: "语音复述", desc: "读完用自己的话讲一遍", at: every * 6, phase: 2 },
-    { key: "readaloud", name: "大声朗读", desc: "把一段读给小猎犬听，看看读得准不准、顺不顺", at: every * 7, phase: 3 },
+    { key: "retell", name: "语音复述", desc: "读完用自己的话讲一遍", at: every * 2, phase: 1 },
+    { key: "guess", name: "猜词义", desc: "联系上下文，猜猜生词的意思", at: every * 3, phase: 2 },
+    { key: "predict", name: "预测", desc: "读到一半，猜猜后面会怎样", at: every * 4, phase: 2 },
+    { key: "locate", name: "回文定位", desc: "在原文中点出依据句", at: every * 5, phase: 2 },
+    { key: "summarise", name: "概括段意", desc: "每段说了什么，拼成文章地图", at: every * 6, phase: 2 },
   ].map((s) => ({ ...s, unlocked: s.at !== null && completed >= s.at, need: s.at === null ? null : Math.max(0, s.at - completed) }));
 }
 
 export { countHan, clamp, rankOf };
+
+// ---------------------------------------------------------------- weekly digest
+/** Monday (YYYY-MM-DD) of the week `date` is in. */
+export function weekStart(date) {
+  const dow = new Date(date + "T00:00:00Z").getUTCDay(); // 0 = Sunday
+  return addDays(date, -((dow + 6) % 7));
+}
+
+const pctText = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+/**
+ * The one-glance weekly card (家长周报): days read, characters, the weakest
+ * skill and one thing to do. d: see parent.weeklyDigest().
+ */
+export function digestText(d) {
+  const lines = [`【字游记周报】${d.name} ${d.from.slice(5)}～${d.to.slice(5)}`];
+  lines.push(`📅 读了 ${d.daysRead}/7 天，通关 ${d.articles} 篇，共 ${d.chars} 字，用时 ${d.minutes} 分钟`);
+  if (d.knownNow != null) lines.push(`🔤 认识的字 ${d.knownNow}` + (d.knownDelta ? `（本周 +${d.knownDelta}）` : ""));
+  if (d.firstTry != null) {
+    const trend = d.firstTryPrev == null ? "" : d.firstTry > d.firstTryPrev + 0.02 ? "，比上周↑" : d.firstTry < d.firstTryPrev - 0.02 ? "，比上周↓" : "，和上周持平";
+    lines.push(`🎯 首答正确率 ${pctText(d.firstTry)}${trend}`);
+  }
+  if (d.weak) lines.push(`🧩 最弱技能：${d.weak.name}（${d.weak.rate}%）`);
+  lines.push(`💡 ${d.tip}`);
+  return lines.join("\n");
+}
+
+/** Body for a chat-bot webhook: 企业微信 / 钉钉 / 飞书 by host, else {text}. */
+export function webhookPayload(url, text) {
+  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  if (/(^|\.)qyapi\.weixin\.qq\.com$|(^|\.)oapi\.dingtalk\.com$/.test(host)) return { msgtype: "text", text: { content: text } };
+  if (/(^|\.)(feishu\.cn|larksuite\.com)$/.test(host)) return { msg_type: "text", content: { text } };
+  return { text };
+}

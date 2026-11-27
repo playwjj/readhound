@@ -1,7 +1,7 @@
 <!-- 回文定位: tap the sentence that proves the answer. -->
 <script setup>
 import { ref, computed } from "vue";
-import { reading, noteAnswer } from "../reading.js";
+import { reading, noteAnswer, progressAt } from "../reading.js";
 import { questApi } from "../lib/api.js";
 import { isHan } from "../lib/fx.js";
 import PageHead from "../components/PageHead.vue";
@@ -56,7 +56,7 @@ async function confirm() {
 </script>
 
 <template>
-  <PageHead :title="R.article.title" :pct="0.75" />
+  <PageHead :title="R.article.title" :pct="progressAt('quest', 0.7)" />
   <div class="card">
     <div class="row">
       <span class="ability">回文定位</span><span v-if="retry" class="ability">再试一次</span>

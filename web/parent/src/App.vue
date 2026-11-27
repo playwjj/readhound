@@ -51,9 +51,12 @@ async function logout() {
     <RouterView v-else v-slot="{ Component }">
       <div class="tab-body" :class="{ stale: loading }">
         <!-- the page itself must be Suspense's direct child for the old one to stay while the new loads -->
-        <Suspense @pending="loading = true" @resolve="loading = false">
+        <!-- a quick load keeps the old page; a slower one swaps to a skeleton instead of leaving stale content up -->
+        <Suspense :timeout="200" @pending="loading = true" @resolve="loading = false">
           <component :is="Component" :key="route.fullPath" />
-          <template #fallback><p class="muted">加载中……</p></template>
+          <template #fallback>
+            <div class="skeleton" aria-busy="true"><i /><i /><i class="short" /></div>
+          </template>
         </Suspense>
       </div>
     </RouterView>
@@ -84,9 +87,15 @@ body:has(.shell.parent) { font-size: 16px; }
 @media (max-width: 720px) { .kpi { grid-template-columns: repeat(2, 1fr); } }
 .kpi .stat b { font-size: 26px; }
 .chars-inline { font-size: 22px; letter-spacing: 4px; line-height: 1.8; word-break: break-all; }
+.chars-grid { display: grid; grid-template-columns: repeat(10, 2em); gap: 4px 6px; font-size: 20px; margin-top: 8px; }
+.skeleton i { display: block; height: 96px; margin-bottom: 14px; border-radius: 16px; background: var(--line); animation: skel 1.2s ease-in-out infinite alternate; }
+.skeleton i.short { height: 48px; width: 60%; }
+@keyframes skel { from { opacity: 0.45; } to { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .skeleton i { animation: none; } }
 details summary { cursor: pointer; }
 .parent svg text { fill: var(--ink-soft); font-size: 12px; }
 .small-note { font-size: 13px; }
+.digest pre { white-space: pre-wrap; font: inherit; line-height: 1.8; margin: 10px 0 0; }
 .py-view { font-size: 20px; line-height: 2.4; }
 .py-view ruby { cursor: pointer; margin: 0 1px; display: inline-flex; flex-direction: column-reverse; align-items: center; min-width: 1em; vertical-align: bottom; line-height: 1.25; }
 .py-view rt { display: block; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
